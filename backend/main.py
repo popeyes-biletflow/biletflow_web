@@ -2,6 +2,7 @@ import os
 import httpx
 from fastapi import FastAPI, HTTPException, status
 from dotenv import load_dotenv
+from supabase import create_client, Client
 
 from schemas import UserAuthSchema, SignupResponseSchema, AuthResponseSchema
 
@@ -9,13 +10,22 @@ load_dotenv()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 app = FastAPI(title="BiletFlow Auth API")
 
 @app.get("/")
 def read_root():
     return {"message": "Welcome to BiletFlow API"}
-
+@app.get("/api/events")
+def get_events():
+    try:
+        response = supabase.table("events").select("*").execute()
+        return response.data
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
 @app.post(
     "/api/auth/signup",
     response_model=SignupResponseSchema,
