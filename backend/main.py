@@ -3,6 +3,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, status
 from dotenv import load_dotenv
 from supabase import create_client, Client
+from promo import router as promo_router
 
 from schemas import UserAuthSchema, SignupResponseSchema, AuthResponseSchema
 
@@ -12,7 +13,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 app = FastAPI(title="BiletFlow Auth API")
-
+app.include_router(promo_router)
 @app.get("/")
 def read_root():
     return {"message": "Welcome to BiletFlow API"}
