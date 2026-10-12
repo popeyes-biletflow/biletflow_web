@@ -1,122 +1,88 @@
-import { useState } from 'react'
-import heroImg from './assets/hero.png'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import './App.css'
+import { useState } from 'react';
+import { AuthProvider, useAuth } from './context/AuthContext';
+import { LoginForm } from './components/LoginForm';
+import { SignupForm } from './components/SignupForm';
+import { CheckoutModal } from './components/CheckoutModal';
 
-function App() {
-  const [count, setCount] = useState(0)
+function MainApp() {
+  const { user, logout } = useAuth();
+  const [view, setView] = useState<'home' | 'login' | 'signup'>('home');
+  const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
+    <div className="min-h-screen bg-gray-50 text-gray-900">
+      <nav className="flex items-center justify-between bg-white px-6 py-4 shadow-sm">
+        <h1 className="text-xl font-bold text-blue-600 cursor-pointer" onClick={() => setView('home')}>
+          BiletFlow
+        </h1>
         <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.tsx</code> and save to test <code>HMR</code>
-          </p>
+          {user ? (
+            <div className="flex items-center gap-4">
+              <span className="text-sm font-medium text-gray-700">Привет, {user.name || user.email}</span>
+              <button
+                onClick={logout}
+                className="rounded-md border border-gray-300 px-3 py-1 text-sm font-medium hover:bg-gray-100"
+              >
+                Выйти
+              </button>
+            </div>
+          ) : (
+            <div className="flex gap-2">
+              <button
+                onClick={() => setView('login')}
+                className="rounded-md px-3 py-1 text-sm font-medium text-gray-700 hover:text-blue-600"
+              >
+                Войти
+              </button>
+              <button
+                onClick={() => setView('signup')}
+                className="rounded-md bg-blue-600 px-3 py-1 text-sm font-medium text-white hover:bg-blue-700"
+              >
+                Регистрация
+              </button>
+            </div>
+          )}
         </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
+      </nav>
 
-      <div className="ticks"></div>
+      {view === 'login' && <LoginForm onSwitchToSignup={() => setView('signup')} onSuccess={() => setView('home')} />}
+      {view === 'signup' && <SignupForm onSwitchToLogin={() => setView('login')} onSuccess={() => setView('home')} />}
 
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
+      {view === 'home' && (
+        <main className="mx-auto max-w-4xl p-6">
+          <div className="rounded-xl bg-white p-8 shadow-sm border border-gray-100">
+            <h2 className="text-2xl font-bold mb-2">BiletFlow Tech Conference 2026</h2>
+            <p className="text-gray-600 mb-6">Главная технологическая конференция года в Астане.</p>
+            
+            {user ? (
+              <button
+                onClick={() => setIsCheckoutOpen(true)}
+                className="rounded-lg bg-emerald-600 px-6 py-3 font-semibold text-white hover:bg-emerald-700"
+              >
+                Купить билет (от 15 000 KZT)
+              </button>
+            ) : (
+              <div className="rounded-lg bg-amber-50 p-4 text-amber-800 text-sm">
+                Пожалуйста, авторизуйтесь (Войти / Регистрация), чтобы оформить заказ.
+              </div>
+            )}
+          </div>
 
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
-  )
+          <CheckoutModal
+            isOpen={isCheckoutOpen}
+            onClose={() => setIsCheckoutOpen(false)}
+            basePriceKZT={15000}
+          />
+        </main>
+      )}
+    </div>
+  );
 }
 
-export default App
+export default function App() {
+  return (
+    <AuthProvider>
+      <MainApp />
+    </AuthProvider>
+  );
+}
