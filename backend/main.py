@@ -6,7 +6,12 @@ import httpx
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from dotenv import load_dotenv
+feature/promo-campaigns
+from supabase import create_client, Client
+from promo import router as promo_router
+
 from supabase import create_client, Client, ClientOptions
+main
 
 from schemas import (
     UserAuthSchema,
@@ -27,6 +32,9 @@ QR_SECRET = os.getenv("QR_SECRET")
 options = ClientOptions(httpx_client=httpx.Client(verify=False))
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY, options=options)
 app = FastAPI(title="BiletFlow Auth API")
+feature/promo-campaigns
+app.include_router(promo_router)
+
 bearer_scheme = HTTPBearer()
 
 
@@ -102,6 +110,7 @@ async def get_current_user(
     )
 
 
+main
 @app.get("/")
 def read_root():
     return {"message": "Welcome to BiletFlow API"}
