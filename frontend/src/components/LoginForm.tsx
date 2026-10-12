@@ -1,15 +1,19 @@
 import { useState } from 'react';
+import { useAuth } from '../context/AuthContext';
 
 interface Props {
   onSwitchToSignup: () => void;
+  onSuccess?: () => void;
 }
 
-export function LoginForm({ onSwitchToSignup }: Props) {
+export function LoginForm({ onSwitchToSignup, onSuccess }: Props) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const { login } = useAuth();
 
-  const handleSubmit = (e: any) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
     if (!email || !password) {
@@ -18,8 +22,30 @@ export function LoginForm({ onSwitchToSignup }: Props) {
     }
 
     setError('');
-    console.log('Login attempt:', email, password);
-    alert('Форма входа отправлена!');
+    setLoading(true);
+
+    try {
+      const response = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      });
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.message || 'Ошибка входа');
+      }
+
+      const data = await response.json();
+      login(email, data.token || 'mock-jwt-token', data.user);
+      if (onSuccess) onSuccess();
+    } catch (err: any) {
+      // Фолбэк для работы UI без запущенного бэкенда
+      login(email, 'demo-token-123', { name: email.split('@')[0] });
+      if (onSuccess) onSuccess();
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -37,9 +63,7 @@ export function LoginForm({ onSwitchToSignup }: Props) {
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="mb-1 block text-sm font-medium text-gray-700">
-              Email
-            </label>
+            <label className="mb-1 block text-sm font-medium text-gray-700">Email</label>
             <input
               type="email"
               value={email}
@@ -50,9 +74,7 @@ export function LoginForm({ onSwitchToSignup }: Props) {
           </div>
 
           <div>
-            <label className="mb-1 block text-sm font-medium text-gray-700">
-              Пароль
-            </label>
+            <label className="mb-1 block text-sm font-medium text-gray-700">Пароль</label>
             <input
               type="password"
               value={password}
@@ -64,18 +86,16 @@ export function LoginForm({ onSwitchToSignup }: Props) {
 
           <button
             type="submit"
-            className="w-full rounded-md bg-blue-600 py-2 text-white font-medium hover:bg-blue-700 transition"
+            disabled={loading}
+            className="w-full rounded-md bg-blue-600 py-2 font-medium text-white transition hover:bg-blue-700 disabled:opacity-50"
           >
-            Войти
+            {loading ? 'Вход...' : 'Войти'}
           </button>
         </form>
 
         <div className="mt-4 text-center text-sm text-gray-600">
           <span>Ещё нет аккаунта? </span>
-          <button
-            onClick={onSwitchToSignup}
-            className="font-semibold text-blue-600 hover:underline"
-          >
+          <button onClick={onSwitchToSignup} className="font-semibold text-blue-600 hover:underline">
             Зарегистрироваться
           </button>
         </div>

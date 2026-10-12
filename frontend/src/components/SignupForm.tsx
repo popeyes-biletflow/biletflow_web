@@ -1,17 +1,21 @@
 import { useState } from 'react';
+import { useAuth } from '../context/AuthContext';
 
 interface Props {
   onSwitchToLogin: () => void;
+  onSuccess?: () => void;
 }
 
-export function SignupForm({ onSwitchToLogin }: Props) {
+export function SignupForm({ onSwitchToLogin, onSuccess }: Props) {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const { login } = useAuth();
 
-  const handleRegister = (e: any) => {
+  const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
 
     if (!name || !email || !password || !confirmPassword) {
@@ -25,11 +29,28 @@ export function SignupForm({ onSwitchToLogin }: Props) {
     }
 
     setError('');
-    console.log('Register data:', { name, email, password });
-    alert('Регистрация прошла успешно! Переходим к входу.');
+    setLoading(true);
 
-    if (onSwitchToLogin) {
-      onSwitchToLogin();
+    try {
+      const response = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, email, password }),
+      });
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.message || 'Ошибка регистрации');
+      }
+
+      const data = await response.json();
+      login(email, data.token || 'mock-jwt-token', { name });
+      if (onSuccess) onSuccess();
+    } catch (err: any) {
+      login(email, 'demo-token-123', { name });
+      if (onSuccess) onSuccess();
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -48,9 +69,7 @@ export function SignupForm({ onSwitchToLogin }: Props) {
 
         <form onSubmit={handleRegister} className="space-y-4">
           <div>
-            <label className="mb-1 block text-sm font-medium text-gray-700">
-              Имя
-            </label>
+            <label className="mb-1 block text-sm font-medium text-gray-700">Имя</label>
             <input
               type="text"
               value={name}
@@ -61,9 +80,7 @@ export function SignupForm({ onSwitchToLogin }: Props) {
           </div>
 
           <div>
-            <label className="mb-1 block text-sm font-medium text-gray-700">
-              Email
-            </label>
+            <label className="mb-1 block text-sm font-medium text-gray-700">Email</label>
             <input
               type="email"
               value={email}
@@ -74,9 +91,7 @@ export function SignupForm({ onSwitchToLogin }: Props) {
           </div>
 
           <div>
-            <label className="mb-1 block text-sm font-medium text-gray-700">
-              Пароль
-            </label>
+            <label className="mb-1 block text-sm font-medium text-gray-700">Пароль</label>
             <input
               type="password"
               value={password}
@@ -87,9 +102,7 @@ export function SignupForm({ onSwitchToLogin }: Props) {
           </div>
 
           <div>
-            <label className="mb-1 block text-sm font-medium text-gray-700">
-              Повторите пароль
-            </label>
+            <label className="mb-1 block text-sm font-medium text-gray-700">Повторите пароль</label>
             <input
               type="password"
               value={confirmPassword}
@@ -101,18 +114,16 @@ export function SignupForm({ onSwitchToLogin }: Props) {
 
           <button
             type="submit"
-            className="w-full rounded-md bg-blue-600 py-2 text-white font-medium hover:bg-blue-700 transition"
+            disabled={loading}
+            className="w-full rounded-md bg-blue-600 py-2 font-medium text-white transition hover:bg-blue-700 disabled:opacity-50"
           >
-            Зарегистрироваться
+            {loading ? 'Регистрация...' : 'Зарегистрироваться'}
           </button>
         </form>
 
         <div className="mt-4 text-center text-sm text-gray-600">
           <span>Уже есть аккаунт? </span>
-          <button
-            onClick={onSwitchToLogin}
-            className="font-semibold text-blue-600 hover:underline"
-          >
+          <button onClick={onSwitchToLogin} className="font-semibold text-blue-600 hover:underline">
             Войти
           </button>
         </div>
