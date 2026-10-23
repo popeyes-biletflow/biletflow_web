@@ -1,17 +1,13 @@
 import os
-import hmac
-import hashlib
 import uuid
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from dotenv import load_dotenv
-feature/promo-campaigns
-from supabase import create_client, Client
-from promo import router as promo_router
-
 from supabase import create_client, Client, ClientOptions
-main
+from promo import router as promo_router
+from routers.tickets import router as tickets_router
+from crypto import generate_hmac_signature
 
 from schemas import (
     UserAuthSchema,
@@ -28,12 +24,11 @@ load_dotenv()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-QR_SECRET = os.getenv("QR_SECRET")
 options = ClientOptions(httpx_client=httpx.Client(verify=False))
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY, options=options)
 app = FastAPI(title="BiletFlow Auth API")
-feature/promo-campaigns
 app.include_router(promo_router)
+app.include_router(tickets_router)
 
 bearer_scheme = HTTPBearer()
 
@@ -49,18 +44,16 @@ def db_for_user(token: str) -> Client:
 
 
 def make_qr_payload(ticket_id: str, event_id: str, user_id: str) -> tuple[str, str]:
-    if not QR_SECRET:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="QR_SECRET is not configured.",
-        )
-    message = f"{ticket_id}.{event_id}.{user_id}"
-    signature = hmac.new(
-        QR_SECRET.encode(),
-        message.encode(),
-        hashlib.sha256,
-    ).hexdigest()
-    return f"{message}.{signature}", signature
+    """Legacy QR helper kept for the event-registration flow.
+
+    Delegates to the canonical ``generate_hmac_signature`` from ``crypto``.
+    Uses a fixed 72-hour expiry.
+    """
+    import time
+    expires_at: int = int(time.time()) + 72 * 3600
+    signature = generate_hmac_signature(ticket_id, event_id, user_id, expires_at)
+    qr_payload = f"{ticket_id}:{event_id}:{user_id}:{expires_at}:{signature}"
+    return qr_payload, signature
 
 
 async def get_current_user(
@@ -110,7 +103,6 @@ async def get_current_user(
     )
 
 
-main
 @app.get("/")
 def read_root():
     return {"message": "Welcome to BiletFlow API"}

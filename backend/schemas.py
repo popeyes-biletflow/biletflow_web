@@ -1,11 +1,11 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
 
 
 class UserAuthSchema(BaseModel):
     """Schema for signup and login requests."""
-    email: EmailStr
+    email: str
     password: str
 
 
@@ -20,13 +20,13 @@ class AuthResponseSchema(BaseModel):
     access_token: str
     refresh_token: str
     user_id: str
-    email: EmailStr
+    email: str
 
 
 class CurrentUser(BaseModel):
     """Authenticated user loaded by get_current_user. Not returned over HTTP."""
     id: str
-    email: EmailStr
+    email: str
     full_name: Optional[str] = None
     phone_number: Optional[str] = None
     payout_info: Optional[str] = None
@@ -37,7 +37,7 @@ class CurrentUser(BaseModel):
 class UserProfileSchema(BaseModel):
     """Schema for user profile."""
     id: str
-    email: EmailStr
+    email: str
     full_name: Optional[str] = None
     phone_number: Optional[str] = None
     payout_info: Optional[str] = None
@@ -68,3 +68,27 @@ class TicketIssueSchema(BaseModel):
     qr_payload: str  # Encoded string sent to UI for rendering the QR code image
     checked_in_at: Optional[datetime] = None
     checked_in_by: Optional[str] = None
+
+# PB-11 schemas
+class TicketIssueRequest(BaseModel):
+    """Request payload for issuing a new ticket with QR payload."""
+    ticket_id: str
+    event_id: str
+    user_id: str
+    expires_in_hours: int = 72
+
+class TicketIssueResponse(BaseModel):
+    """Response containing issued ticket details and QR payload."""
+    ticket_id: str
+    qr_payload: str
+    status: str = "valid"
+
+class TicketVerifyRequest(BaseModel):
+    """Payload for verifying a QR code."""
+    qr_payload: str
+
+class TicketVerifyResponse(BaseModel):
+    """Result of QR verification."""
+    valid: bool
+    message: str
+    ticket_id: str | None = None
