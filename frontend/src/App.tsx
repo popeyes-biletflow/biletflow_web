@@ -3,11 +3,17 @@ import { AuthProvider, useAuth } from './context/AuthContext';
 import { LoginForm } from './components/LoginForm';
 import { SignupForm } from './components/SignupForm';
 import { CheckoutModal } from './components/CheckoutModal';
+import { TicketDashboard } from './pages/TicketDashboard';
 
 function MainApp() {
   const { user, logout } = useAuth();
-  const [view, setView] = useState<'home' | 'login' | 'signup'>('home');
+  const [view, setView] = useState<'home' | 'login' | 'signup' | 'tickets'>('home');
   const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
+
+  const handleLogout = () => {
+    logout();
+    setView('home');
+  };
 
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900">
@@ -20,7 +26,17 @@ function MainApp() {
             <div className="flex items-center gap-4">
               <span className="text-sm font-medium text-gray-700">Привет, {user.name || user.email}</span>
               <button
-                onClick={logout}
+                onClick={() => setView('tickets')}
+                className={`rounded-md px-3 py-1 text-sm font-medium transition ${
+                  view === 'tickets'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                }`}
+              >
+                🎫 Мои билеты
+              </button>
+              <button
+                onClick={handleLogout}
                 className="rounded-md border border-gray-300 px-3 py-1 text-sm font-medium hover:bg-gray-100"
               >
                 Выйти
@@ -47,6 +63,8 @@ function MainApp() {
 
       {view === 'login' && <LoginForm onSwitchToSignup={() => setView('signup')} onSuccess={() => setView('home')} />}
       {view === 'signup' && <SignupForm onSwitchToLogin={() => setView('login')} onSuccess={() => setView('home')} />}
+      
+      {view === 'tickets' && <TicketDashboard />}
 
       {view === 'home' && (
         <main className="mx-auto max-w-4xl p-6">
