@@ -28,14 +28,6 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 options = ClientOptions(httpx_client=httpx.Client(verify=False))
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY, options=options)
 app = FastAPI(title="BiletFlow Auth API")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(","),
-    allow_origin_regex=r"https://.*\.app\.github\.dev",
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 app.include_router(promo_router)
 app.include_router(tickets_router)
 
@@ -419,6 +411,19 @@ async def register_for_event(
         checked_in_by=str(row["checked_in_by"]) if row.get("checked_in_by") else None,
         qr_payload=qr_payload,
     )
+
+
+# ---------------------------------------------------------------------------
+# PB-8: CORS for the React frontend (local dev + GitHub Codespaces)
+# ---------------------------------------------------------------------------
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(","),
+    allow_origin_regex=r"https://.*\.app\.github\.dev",
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # ---------------------------------------------------------------------------
