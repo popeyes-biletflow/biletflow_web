@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { getEvents, formatKZT, type EventItem } from '../services/events';
@@ -23,7 +23,7 @@ export function EventsPage() {
     getEvents().then(setEvents).catch(() => setError(true)).finally(() => setLoading(false));
   }, []);
 
-  const catLabel = (raw: string) => t(`categories.${categoryKey(raw)}`, { defaultValue: raw });
+  const catLabel = useCallback((raw: string) => t(`categories.${categoryKey(raw)}`, { defaultValue: raw }), [t]);
   const categories = useMemo(() => [...new Set(events.map((e) => e.category))].sort(), [events]);
 
   const visible = useMemo(() => {
@@ -32,7 +32,7 @@ export function EventsPage() {
       .filter((e) => category === 'all' || e.category === category)
       .filter((e) => !needle || [e.title, e.description, e.venueName, e.venueAddress, catLabel(e.category)].join(' ').toLowerCase().includes(needle))
       .sort((a, b) => a.startsAt.localeCompare(b.startsAt));
-  }, [events, q, category, t]);
+  }, [events, q, category, catLabel]);
 
   return (
     <main className="mx-auto max-w-6xl p-6">
