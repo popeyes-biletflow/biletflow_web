@@ -1,0 +1,110 @@
+{
+  "nav": {
+    "events": "Events",
+    "tickets": "My tickets",
+    "login": "Log in",
+    "signup": "Sign up",
+    "logout": "Log out",
+    "hello": "Hi, {{name}}",
+    "buy": "Buy ticket",
+    "notFound": "Page not found",
+    "toEvents": "Go to events"
+  },
+  "discovery": {
+    "title": "Discover events",
+    "searchPlaceholder": "Search by name, venue or address…",
+    "searchLabel": "Search events",
+    "results_one": "{{count}} event",
+    "results_other": "{{count}} events",
+    "empty": "No events match your filters.",
+    "loading": "Loading events…",
+    "error": "Could not load events. Is the backend running?",
+    "from": "from {{price}}",
+    "clear": "Clear filters"
+  },
+  "filters": {
+    "label": "Categories",
+    "all": "All"
+  },
+  "categories": {
+    "music": "Music",
+    "concert": "Concert",
+    "theatre": "Theatre",
+    "sports": "Sports",
+    "conference": "Conference",
+    "technology": "Technology",
+    "education": "Education",
+    "festival": "Festival",
+    "exhibition": "Exhibition",
+    "comedy": "Comedy",
+    "kids": "Kids",
+    "other": "Other"
+  },
+  "details": {
+    "back": "← Back to events",
+    "when": "Date & time",
+    "venue": "Venue",
+    "timezone": "Time zone: {{tz}}",
+    "tickets": "Ticket tiers",
+    "left": "{{count}} left",
+    "soldOut": "Sold out",
+    "addToCalendar": "Add to calendar (.ics)",
+    "notFound": "Event not found",
+    "loading": "Loading event…",
+    "noTiers": "Ticket prices will be announced soon."
+  },
+  "map": {
+    "title": "Venue map",
+    "openGoogle": "Open in Google Maps",
+    "openYandex": "Open in Yandex Maps",
+    "iframeTitle": "Map showing {{venue}}"
+  },
+  "seating": {
+    "title": "Seating layout",
+    "stage": "STAGE",
+    "hint": "Select a tier to see its price.",
+    "selected": "{{tier}} — {{price}}",
+    "legend": "Tiers"
+  },
+  "dates": {
+    "months": [
+      "January",
+      "February",
+      "March",
+      "April",
+      "May",
+      "June",
+      "July",
+      "August",
+      "September",
+      "October",
+      "November",
+      "December"
+    ],
+    "monthsShort": [
+      "Jan",
+      "Feb",
+      "Mar",
+      "Apr",
+      "May",
+      "Jun",
+      "Jul",
+      "Aug",
+      "Sep",
+      "Oct",
+      "Nov",
+      "Dec"
+    ],
+    "weekdays": [
+      "Sunday",
+      "Monday",
+      "Tuesday",
+      "Wednesday",
+      "Thursday",
+      "Friday",
+      "Saturday"
+    ],
+    "card": "{{day}} {{monthShort}} {{year}}, {{time}}",
+    "full": "{{weekday}}, {{day}} {{month}} {{year}}, {{time}}"
+  }
+}
