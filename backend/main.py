@@ -2,6 +2,7 @@ import os
 import uuid
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from dotenv import load_dotenv
 from supabase import create_client, Client, ClientOptions
@@ -27,6 +28,14 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 options = ClientOptions(httpx_client=httpx.Client(verify=False))
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY, options=options)
 app = FastAPI(title="BiletFlow Auth API")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(","),
+    allow_origin_regex=r"https://.*\.app\.github\.dev",
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.include_router(promo_router)
 app.include_router(tickets_router)
 
@@ -410,3 +419,17 @@ async def register_for_event(
         checked_in_by=str(row["checked_in_by"]) if row.get("checked_in_by") else None,
         qr_payload=qr_payload,
     )
+
+
+# ---------------------------------------------------------------------------
+# PB-8: public event details
+# ---------------------------------------------------------------------------
+@app.get("/api/events/{event_id}")
+def get_event(event_id: str):
+    event_res = supabase.table("events").select("*").eq("id", event_id).execute()
+    if not event_res.data:
+        raise HTTPException(status_code=404, detail="Event not found.")
+    event = event_res.data[0]
+    tiers = supabase.table("ticket_types").select("*").eq("event_id", event_id).execute()
+    event["ticket_types"] = tiers.data or []
+    return event

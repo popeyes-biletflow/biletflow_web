@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
+import { API_BASE_URL } from '../services/config';
 
 interface Props {
   onSwitchToSignup: () => void;
@@ -25,7 +26,7 @@ export function LoginForm({ onSwitchToSignup, onSuccess }: Props) {
     setLoading(true);
 
     try {
-      const response = await fetch('/api/auth/login', {
+      const response = await fetch(`${API_BASE_URL}/api/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
@@ -33,11 +34,11 @@ export function LoginForm({ onSwitchToSignup, onSuccess }: Props) {
 
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
-        throw new Error(data.message || 'Ошибка входа');
+        throw new Error(data.detail || data.message || 'Ошибка входа');
       }
 
       const data = await response.json();
-      login(email, data.token || 'mock-jwt-token', data.user);
+      login(email, data.access_token || data.token || 'mock-jwt-token', data.user);
       if (onSuccess) onSuccess();
     } catch (err: any) {
       // Фолбэк для работы UI без запущенного бэкенда
