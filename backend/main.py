@@ -2,6 +2,9 @@ import os
 import uuid
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import Optional
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from dotenv import load_dotenv
 from supabase import create_client, Client, ClientOptions
@@ -27,6 +30,14 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 options = ClientOptions(httpx_client=httpx.Client(verify=False))
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY, options=options)
 app = FastAPI(title="BiletFlow Auth API")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(","),
+    allow_origin_regex=r"https://.*\.app\.github\.dev",
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.include_router(promo_router)
 app.include_router(tickets_router)
 
@@ -410,3 +421,116 @@ async def register_for_event(
         checked_in_by=str(row["checked_in_by"]) if row.get("checked_in_by") else None,
         qr_payload=qr_payload,
     )
+
+
+# ---------------------------------------------------------------------------
+# PB-8: public event details
+# ---------------------------------------------------------------------------
+@app.get("/api/events/{event_id}")
+def get_event(event_id: str):
+    event_res = supabase.table("events").select("*").eq("id", event_id).execute()
+    if not event_res.data:
+        raise HTTPException(status_code=404, detail="Event not found.")
+    event = event_res.data[0]
+    tiers = supabase.table("ticket_types").select("*").eq("event_id", event_id).execute()
+    event["ticket_types"] = tiers.data or []
+    return event
+
+
+# ---------------------------------------------------------------------------
+# PB-13: organizer event management + analytics
+# ---------------------------------------------------------------------------
+class EventUpsertSchema(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    category: Optional[str] = None
+    starts_at: Optional[str] = None
+    ends_at: Optional[str] = None
+    timezone: Optional[str] = "Asia/Almaty"
+    venue_name: Optional[str] = None
+    venue_address: Optional[str] = None
+    image_url: Optional[str] = None
+    status: Optional[str] = "draft"  # draft | published
+
+
+def require_organizer(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+    if (user.role or "").lower() not in ("organizer", "admin"):
+        raise HTTPException(status_code=403, detail="Organizer role required.")
+    return user
+
+
+def _own_event(db: Client, event_id: str, user: CurrentUser) -> dict:
+    res = db.table("events").select("*").eq("id", event_id).execute()
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Event not found.")
+    ev = res.data[0]
+    if ev.get("organizer_id") and str(ev["organizer_id"]) != user.id and user.role != "admin":
+        raise HTTPException(status_code=403, detail="Not your event.")
+    return ev
+
+
+@app.get("/api/organizer/events")
+def organizer_events(user: CurrentUser = Depends(require_organizer)):
+    db = db_for_user(user.access_token)
+    return db.table("events").select("*").eq("organizer_id", user.id).execute().data
+
+
+@app.post("/api/organizer/events", status_code=201)
+def create_event(payload: EventUpsertSchema, user: CurrentUser = Depends(require_organizer)):
+    if not payload.title or not payload.starts_at:
+        raise HTTPException(status_code=400, detail="title and starts_at are required.")
+    db = db_for_user(user.access_token)
+    data = payload.model_dump(exclude_none=True) | {"organizer_id": user.id}
+    res = db.table("events").insert(data).execute()
+    return res.data[0]
+
+
+@app.put("/api/organizer/events/{event_id}")
+def update_event(event_id: str, payload: EventUpsertSchema, user: CurrentUser = Depends(require_organizer)):
+    db = db_for_user(user.access_token)
+    _own_event(db, event_id, user)
+    data = payload.model_dump(exclude_unset=True)
+    if not data:
+        raise HTTPException(status_code=400, detail="No fields provided for update.")
+    return db.table("events").update(data).eq("id", event_id).execute().data[0]
+
+
+@app.patch("/api/organizer/events/{event_id}/publish")
+def publish_event(event_id: str, published: bool = True, user: CurrentUser = Depends(require_organizer)):
+    db = db_for_user(user.access_token)
+    _own_event(db, event_id, user)
+    status_value = "published" if published else "draft"
+    return db.table("events").update({"status": status_value}).eq("id", event_id).execute().data[0]
+
+
+@app.delete("/api/organizer/events/{event_id}", status_code=204)
+def delete_event(event_id: str, user: CurrentUser = Depends(require_organizer)):
+    db = db_for_user(user.access_token)
+    _own_event(db, event_id, user)
+    db.table("events").delete().eq("id", event_id).execute()
+
+
+@app.get("/api/organizer/events/{event_id}/stats")
+def event_stats(event_id: str, user: CurrentUser = Depends(require_organizer)):
+    db = db_for_user(user.access_token)
+    _own_event(db, event_id, user)
+    types = db.table("ticket_types").select("*").eq("event_id", event_id).execute().data or []
+    tickets = db.table("tickets").select("id, ticket_type_id, status").eq("event_id", event_id).execute().data or []
+    active = [t for t in tickets if t.get("status") != "cancelled"]
+    by_type = []
+    revenue = 0
+    for tt in types:
+        sold = sum(1 for t in active if str(t["ticket_type_id"]) == str(tt["id"]))
+        price = tt.get("price") or tt.get("price_kzt") or 0
+        revenue += sold * price
+        by_type.append({"ticket_type_id": tt["id"], "name": tt.get("name"), "price_kzt": price,
+                        "sold": sold, "remaining": tt.get("quantity")})
+    return {
+        "event_id": event_id,
+        "registrations": len(tickets),
+        "tickets_sold": len(active),
+        "checked_in": sum(1 for t in tickets if t.get("status") == "used"),
+        "cancelled": len(tickets) - len(active),
+        "gross_revenue_kzt": revenue,
+        "by_ticket_type": by_type,
+    }
