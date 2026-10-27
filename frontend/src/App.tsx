@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { BrowserRouter, Link, NavLink, Navigate, Route, Routes, useNavigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
-import { LanguageProvider, LanguageSwitcher } from './i18n/LanguageContext';
+import { useTranslation } from 'react-i18next';
+import { LanguageSwitcher } from './i18n/LanguageSwitcher';
 import { LoginForm } from './components/LoginForm';
 import { SignupForm } from './components/SignupForm';
 import { CheckoutModal } from './components/CheckoutModal';
@@ -15,6 +16,7 @@ const navClass = ({ isActive }: { isActive: boolean }) =>
 function MainApp() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const { t } = useTranslation();
   const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
 
   return (
@@ -22,18 +24,18 @@ function MainApp() {
       <nav className="flex flex-wrap items-center justify-between gap-3 bg-white px-6 py-4 shadow-sm">
         <Link to="/events" className="text-xl font-bold text-blue-600">BiletFlow</Link>
         <div className="flex flex-wrap items-center gap-2">
-          <NavLink to="/events" className={navClass}>Афиша</NavLink>
+          <NavLink to="/events" className={navClass}>{t('nav.events')}</NavLink>
           {user ? (
             <>
-              <NavLink to="/tickets" className={navClass}>Мои билеты</NavLink>
-              <span className="text-sm text-gray-600">Привет, {user.name || user.email}</span>
+              <NavLink to="/tickets" className={navClass}>{t('nav.tickets')}</NavLink>
+              <span className="text-sm text-gray-600">{t('nav.hello', { name: user.name || user.email })}</span>
               <button onClick={() => { logout(); navigate('/events'); }}
-                className="rounded-md border border-gray-300 px-3 py-1 text-sm font-medium hover:bg-gray-100">Выйти</button>
+                className="rounded-md border border-gray-300 px-3 py-1 text-sm font-medium hover:bg-gray-100">{t('nav.logout')}</button>
             </>
           ) : (
             <>
-              <NavLink to="/login" className={navClass}>Войти</NavLink>
-              <NavLink to="/signup" className={navClass}>Регистрация</NavLink>
+              <NavLink to="/login" className={navClass}>{t('nav.login')}</NavLink>
+              <NavLink to="/signup" className={navClass}>{t('nav.signup')}</NavLink>
             </>
           )}
           <LanguageSwitcher />
@@ -49,7 +51,7 @@ function MainApp() {
             {user && (
               <div className="mx-auto max-w-4xl px-6 pb-10">
                 <button onClick={() => setIsCheckoutOpen(true)}
-                  className="rounded-lg bg-emerald-600 px-6 py-3 font-semibold text-white hover:bg-emerald-700">Купить билет</button>
+                  className="rounded-lg bg-emerald-600 px-6 py-3 font-semibold text-white hover:bg-emerald-700">{t('nav.buy')}</button>
                 <CheckoutModal isOpen={isCheckoutOpen} onClose={() => setIsCheckoutOpen(false)} basePriceKZT={15000} />
               </div>
             )}
@@ -58,7 +60,7 @@ function MainApp() {
         <Route path="/login" element={<LoginForm onSwitchToSignup={() => navigate('/signup')} onSuccess={() => navigate('/events')} />} />
         <Route path="/signup" element={<SignupForm onSwitchToLogin={() => navigate('/login')} onSuccess={() => navigate('/login')} />} />
         <Route path="/tickets" element={user ? <TicketDashboard /> : <Navigate to="/login" replace />} />
-        <Route path="*" element={<main className="mx-auto max-w-4xl p-6"><h2 className="text-2xl font-bold">404</h2><Link to="/events" className="text-blue-600">Афиша</Link></main>} />
+        <Route path="*" element={<main className="mx-auto max-w-4xl p-6"><h2 className="text-2xl font-bold">{t('nav.notFound')}</h2><Link to="/events" className="text-blue-600">{t('nav.toEvents')}</Link></main>} />
       </Routes>
     </div>
   );
@@ -66,12 +68,10 @@ function MainApp() {
 
 export default function App() {
   return (
-    <LanguageProvider>
       <AuthProvider>
         <BrowserRouter>
           <MainApp />
         </BrowserRouter>
       </AuthProvider>
-    </LanguageProvider>
   );
 }
