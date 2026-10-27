@@ -1,3 +1,4 @@
+from orders import router as orders_router
 import os
 import uuid
 import httpx
@@ -5,8 +6,6 @@ from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from dotenv import load_dotenv
 from supabase import create_client, Client, ClientOptions
-from promo import router as promo_router
-from routers.tickets import router as tickets_router
 from crypto import generate_hmac_signature
 
 from schemas import (
@@ -27,8 +26,12 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 options = ClientOptions(httpx_client=httpx.Client(verify=False))
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY, options=options)
 app = FastAPI(title="BiletFlow Auth API")
+from promo import router as promo_router
+from routers.tickets import router as tickets_router
 app.include_router(promo_router)
 app.include_router(tickets_router)
+app.include_router(orders_router)
+
 
 bearer_scheme = HTTPBearer()
 
