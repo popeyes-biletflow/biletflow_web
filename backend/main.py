@@ -516,7 +516,8 @@ def event_stats(event_id: str, user: CurrentUser = Depends(require_organizer)):
     _own_event(db, event_id, user)
     types = db.table("ticket_types").select("*").eq("event_id", event_id).execute().data or []
     tickets = db.table("tickets").select("id, ticket_type_id, status").eq("event_id", event_id).execute().data or []
-    active = [t for t in tickets if t.get("status") != "cancelled"]
+    status_of = lambda t: (t.get("status") or "").lower()
+    active = [t for t in tickets if status_of(t) not in ("cancelled", "refunded")]
     by_type = []
     revenue = 0
     for tt in types:
@@ -529,7 +530,7 @@ def event_stats(event_id: str, user: CurrentUser = Depends(require_organizer)):
         "event_id": event_id,
         "registrations": len(tickets),
         "tickets_sold": len(active),
-        "checked_in": sum(1 for t in tickets if t.get("status") == "used"),
+        "checked_in": sum(1 for t in tickets if status_of(t) in ("checked_in", "used")),
         "cancelled": len(tickets) - len(active),
         "gross_revenue_kzt": revenue,
         "by_ticket_type": by_type,
