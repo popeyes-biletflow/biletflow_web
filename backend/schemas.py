@@ -1,6 +1,15 @@
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, Any
 from datetime import datetime
+
+# ---------------------------------------------------------------------------
+# Role constants (allowed exactly in profiles.role CHECK constraint)
+# ---------------------------------------------------------------------------
+ROLE_ATTENDEE = "attendee"
+ROLE_ORGANIZER = "organizer"
+ROLE_EVENT_ADMIN = "event_admin"
+ROLE_PLATFORM_ADMIN = "platform_admin"
+ALL_ROLES = {ROLE_ATTENDEE, ROLE_ORGANIZER, ROLE_EVENT_ADMIN, ROLE_PLATFORM_ADMIN}
 
 
 class UserAuthSchema(BaseModel):
@@ -92,3 +101,85 @@ class TicketVerifyResponse(BaseModel):
     valid: bool
     message: str
     ticket_id: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# PB-16: Support Cases & Paid Sales Activation schemas
+# ---------------------------------------------------------------------------
+
+class SupportCaseCreateRequest(BaseModel):
+    category: str
+    subject: str
+    message: Optional[str] = None
+    body: Optional[str] = None  # accepts either message or body
+    event_id: Optional[str] = None
+    order_id: Optional[str] = None
+    ticket_id: Optional[str] = None
+
+
+class SupportMessageCreateRequest(BaseModel):
+    body: str
+
+
+class SupportCaseStatusUpdateRequest(BaseModel):
+    status: str
+    assign_to_caller: Optional[bool] = False
+    assign_to_me: Optional[bool] = False
+
+
+class SupportMessageSchema(BaseModel):
+    id: str
+    case_id: str
+    sender_id: str
+    body: str
+    created_at: Optional[datetime] = None
+
+
+class SupportCaseSchema(BaseModel):
+    id: str
+    requester_id: str
+    category: str
+    status: str
+    subject: str
+    event_id: Optional[str] = None
+    order_id: Optional[str] = None
+    ticket_id: Optional[str] = None
+    assigned_to: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class SupportCaseDetailResponse(BaseModel):
+    case: SupportCaseSchema
+    messages: list[SupportMessageSchema]
+
+
+class PaidSalesActivationRequest(BaseModel):
+    paid_event_terms_accepted: bool
+
+
+class ChecklistItem(BaseModel):
+    passed: bool
+    detail: Optional[str] = None
+    simulated: Optional[bool] = None
+    amount_kzt: Optional[int] = None
+
+
+class PaidSalesActivationChecklist(BaseModel):
+    at_least_one_paid_ticket_type: ChecklistItem
+    identity_verified: ChecklistItem
+    valid_payout_account: ChecklistItem
+    paid_event_terms_accepted: ChecklistItem
+    activation_fee_paid: ChecklistItem
+
+
+class PaidSalesActivationResponse(BaseModel):
+    status: str
+    paid_sales_status: str
+    paid_sales_active: Optional[bool] = None
+    event_id: str
+    payment_id: Optional[str] = None
+    activation_fee_kzt: Optional[int] = None
+    simulated: Optional[bool] = None
+    checklist: Optional[dict[str, Any]] = None
+
