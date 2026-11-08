@@ -73,5 +73,46 @@ export async function getEvent(id: string): Promise<EventItem> {
   return normalizeEvent(await http<Raw>(`/api/events/${id}`));
 }
 
+// ---------- PB-13 organizer ----------
+export interface EventForm {
+  title: string;
+  description: string;
+  category: string;
+  starts_at: string;
+  ends_at: string;
+  timezone: string;
+  venue_name: string;
+  venue_address: string;
+  image_url: string;
+}
+
+export interface EventStats {
+  registrations: number;
+  tickets_sold: number;
+  checked_in: number;
+  cancelled: number;
+  gross_revenue_kzt: number;
+  by_ticket_type: { ticket_type_id: string; name: string; price_kzt: number; sold: number; remaining: number | null }[];
+}
+
+export interface CampaignStats {
+  campaigns: { code?: string; name?: string; uses?: number; orders?: number; discount_kzt?: number; revenue_kzt?: number; [k: string]: unknown }[];
+  totals: Record<string, number>;
+}
+
+export const organizerApi = {
+  list: async (token: string) => (await http<Raw[]>('/api/organizer/events', {}, token)).map(normalizeEvent),
+  create: (token: string, body: Partial<EventForm>) =>
+    http<Raw>('/api/organizer/events', { method: 'POST', body: JSON.stringify(body) }, token),
+  update: (token: string, id: string, body: Partial<EventForm>) =>
+    http<Raw>(`/api/organizer/events/${id}`, { method: 'PUT', body: JSON.stringify(body) }, token),
+  publish: (token: string, id: string, published: boolean) =>
+    http<Raw>(`/api/organizer/events/${id}/publish?published=${published}`, { method: 'PATCH' }, token),
+  remove: (token: string, id: string) => http<void>(`/api/organizer/events/${id}`, { method: 'DELETE' }, token),
+  stats: (token: string, id: string) => http<EventStats>(`/api/organizer/events/${id}/stats`, {}, token),
+  // Provided by PB-12 (PR #8). Dashboard degrades gracefully if it is not merged yet.
+  campaigns: (token: string) => http<CampaignStats>('/api/organizer/campaigns/stats', {}, token),
+};
+
 export const formatKZT = (n: number) =>
   `${new Intl.NumberFormat('ru-RU').format(Math.round(n))} ₸`;

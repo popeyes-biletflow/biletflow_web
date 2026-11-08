@@ -8,6 +8,7 @@ import { CheckoutModal } from './components/CheckoutModal';
 import { TicketDashboard } from './pages/TicketDashboard';
 import { EventsPage } from './pages/EventsPage';
 import { EventDetailsPage } from './pages/EventDetailsPage';
+import { OrganizerDashboard } from './pages/OrganizerDashboard';
 
 const navClass = ({ isActive }: { isActive: boolean }) =>
   `rounded-md px-3 py-1 text-sm font-medium transition ${isActive ? 'bg-blue-600 text-white' : 'text-gray-700 hover:bg-gray-100'}`;
@@ -26,6 +27,7 @@ function MainApp() {
           {user ? (
             <>
               <NavLink to="/tickets" className={navClass}>Мои билеты</NavLink>
+              <NavLink to="/organizer" className={navClass}>Организатор</NavLink>
               <span className="text-sm text-gray-600">Привет, {user.name || user.email}</span>
               <button onClick={() => { logout(); navigate('/events'); }}
                 className="rounded-md border border-gray-300 px-3 py-1 text-sm font-medium hover:bg-gray-100">Выйти</button>
@@ -58,6 +60,7 @@ function MainApp() {
         <Route path="/login" element={<LoginForm onSwitchToSignup={() => navigate('/signup')} onSuccess={() => navigate('/events')} />} />
         <Route path="/signup" element={<SignupForm onSwitchToLogin={() => navigate('/login')} onSuccess={() => navigate('/login')} />} />
         <Route path="/tickets" element={user ? <TicketDashboard /> : <Navigate to="/login" replace />} />
+        <Route path="/organizer" element={user ? <OrganizerDashboard /> : <Navigate to="/login" replace />} />
         <Route path="*" element={<main className="mx-auto max-w-4xl p-6"><h2 className="text-2xl font-bold">404</h2><Link to="/events" className="text-blue-600">Афиша</Link></main>} />
       </Routes>
     </div>
