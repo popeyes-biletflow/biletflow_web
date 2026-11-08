@@ -7,6 +7,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from dotenv import load_dotenv
 from supabase import create_client, Client, ClientOptions
+from promo import router as promo_router
+from routers.tickets import router as tickets_router
+from routers.support import router as support_router
+from routers.organizer import router as organizer_router
 from crypto import generate_hmac_signature
 
 from schemas import (
@@ -31,6 +35,8 @@ from promo import router as promo_router
 from routers.tickets import router as tickets_router
 app.include_router(promo_router)
 app.include_router(tickets_router)
+app.include_router(support_router)
+app.include_router(organizer_router)
 app.include_router(orders_router)
 
 
@@ -269,7 +275,7 @@ async def register_for_event(
     ticket_type_id = payload.ticket_type_id
 
     try:
-        event_res = db.table("events").select("id").eq("id", event_id).execute()
+        event_res = db.table("events").select("*").eq("id", event_id).execute()
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -302,6 +308,22 @@ async def register_for_event(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Ticket type does not belong to this event.",
         )
+
+    # Paid-sales guard: if ticket type has a price, the event must have
+    # paid_sales_status == 'ACTIVE' and paid_sales_active == True.
+    ticket_price = ticket_type.get("price") or 0
+    if ticket_price > 0:
+        event_full = event_res.data[0]
+        paid_sales_status = event_full.get("paid_sales_status", "NONE")
+        paid_sales_active = bool(event_full.get("paid_sales_active", False))
+        if paid_sales_status != "ACTIVE" or not paid_sales_active:
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail=(
+                    "Paid ticket sales are not yet activated for this event. "
+                    "The organizer must activate paid sales first."
+                ),
+            )
 
     try:
         existing = (
