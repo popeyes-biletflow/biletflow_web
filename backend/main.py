@@ -121,7 +121,13 @@ def read_root():
 @app.get("/api/events")
 def get_events():
     try:
-        response = supabase.table("events").select("*").execute()
+        response = (
+            supabase.table("events")
+            .select("*")
+            .eq("status", "published")
+            .eq("visibility", "public")
+            .execute()
+        )
         return response.data
     except Exception as e:
         raise HTTPException(
