@@ -2,7 +2,8 @@ from orders import router as orders_router
 import os
 import uuid
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, status
+from typing import Optional
+from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from dotenv import load_dotenv
@@ -20,8 +21,12 @@ from schemas import (
     CurrentUser,
     UserProfileSchema,
     UserProfileUpdateSchema,
+    EventCreateSchema,
+    EventUpdateSchema,
     RegisterEventSchema,
     TicketIssueSchema,
+    ROLE_ORGANIZER,
+    ROLE_PLATFORM_ADMIN,
 )
 
 load_dotenv()
@@ -113,6 +118,44 @@ async def get_current_user(
     )
 
 
+optional_bearer = HTTPBearer(auto_error=False)
+
+
+async def get_optional_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(optional_bearer),
+) -> Optional[CurrentUser]:
+    if credentials is None:
+        return None
+    return await get_current_user(credentials)
+
+
+def require_organizer(current_user: CurrentUser) -> None:
+    if (current_user.role or "").strip().lower() != ROLE_ORGANIZER:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Organizer role required.",
+        )
+
+
+def load_owned_event(db: Client, event_id: str, current_user: CurrentUser) -> dict:
+    try:
+        event_res = db.table("events").select("*").eq("id", event_id).execute()
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        )
+    if not event_res.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found.")
+    event = event_res.data[0]
+    if str(event.get("organizer_id", "")) != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not manage this event.",
+        )
+    return event
+
+
 @app.get("/")
 def read_root():
     return {"message": "Welcome to BiletFlow API"}
@@ -134,6 +177,206 @@ def get_events():
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e)
         )
+
+
+@app.post("/api/organizer/events", status_code=status.HTTP_201_CREATED)
+async def create_organizer_event(
+    payload: EventCreateSchema,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_organizer(current_user)
+    db = db_for_user(current_user.access_token)
+    row = payload.model_dump(exclude_unset=True, mode="json")
+    row["organizer_id"] = current_user.id
+    row["status"] = "draft"
+    try:
+        response = db.table("events").insert(row).execute()
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        )
+    if not response.data:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to create event.",
+        )
+    return response.data[0]
+
+
+@app.get("/api/organizer/events")
+async def list_organizer_events(
+    status_filter: Optional[str] = Query(None, alias="status"),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_organizer(current_user)
+    db = db_for_user(current_user.access_token)
+    try:
+        query = (
+            db.table("events")
+            .select("*")
+            .eq("organizer_id", current_user.id)
+        )
+        if status_filter:
+            query = query.eq("status", status_filter)
+        response = query.execute()
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        )
+    return response.data
+
+
+@app.patch("/api/organizer/events/{event_id}")
+async def update_organizer_event(
+    event_id: str,
+    payload: EventUpdateSchema,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_organizer(current_user)
+    db = db_for_user(current_user.access_token)
+    event = load_owned_event(db, event_id, current_user)
+    if event.get("status") == "cancelled":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cancelled events cannot be edited.",
+        )
+    update_data = payload.model_dump(exclude_unset=True, mode="json")
+    if not update_data:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No fields provided for update.",
+        )
+    try:
+        response = (
+            db.table("events")
+            .update(update_data)
+            .eq("id", event_id)
+            .execute()
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        )
+    if not response.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found.")
+    return response.data[0]
+
+
+@app.post("/api/organizer/events/{event_id}/publish")
+async def publish_organizer_event(
+    event_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_organizer(current_user)
+    db = db_for_user(current_user.access_token)
+    event = load_owned_event(db, event_id, current_user)
+    if event.get("status") == "cancelled":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cancelled events cannot be re-published.",
+        )
+    missing = []
+    if not (event.get("title") or "").strip():
+        missing.append("title")
+    if not event.get("starts_at"):
+        missing.append("date")
+    venue = (event.get("venue_name") or event.get("venue_address") or "").strip()
+    if not venue:
+        missing.append("venue")
+    try:
+        types_res = (
+            db.table("ticket_types")
+            .select("id")
+            .eq("event_id", event_id)
+            .execute()
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        )
+    if not types_res.data:
+        missing.append("at least 1 ticket type")
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot publish unless the event has: " + ", ".join(missing) + ".",
+        )
+    # TODO audit
+    try:
+        response = (
+            db.table("events")
+            .update({"status": "published"})
+            .eq("id", event_id)
+            .execute()
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        )
+    if not response.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found.")
+    return response.data[0]
+
+
+@app.post("/api/organizer/events/{event_id}/unpublish")
+async def unpublish_organizer_event(
+    event_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_organizer(current_user)
+    db = db_for_user(current_user.access_token)
+    event = load_owned_event(db, event_id, current_user)
+    if event.get("status") == "cancelled":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cancelled events cannot be unpublished.",
+        )
+    try:
+        response = (
+            db.table("events")
+            .update({"status": "draft"})
+            .eq("id", event_id)
+            .execute()
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        )
+    if not response.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found.")
+    return response.data[0]
+
+
+@app.post("/api/organizer/events/{event_id}/cancel")
+async def cancel_organizer_event(
+    event_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_organizer(current_user)
+    db = db_for_user(current_user.access_token)
+    load_owned_event(db, event_id, current_user)
+    # TODO audit
+    try:
+        response = (
+            db.table("events")
+            .update({"status": "cancelled"})
+            .eq("id", event_id)
+            .execute()
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        )
+    if not response.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found.")
+    return response.data[0]
 
 
 @app.post(
@@ -461,11 +704,25 @@ app.add_middleware(
 # PB-8: public event details
 # ---------------------------------------------------------------------------
 @app.get("/api/events/{event_id}")
-def get_event(event_id: str):
+async def get_event(
+    event_id: str,
+    current_user: Optional[CurrentUser] = Depends(get_optional_user),
+):
     event_res = supabase.table("events").select("*").eq("id", event_id).execute()
     if not event_res.data:
         raise HTTPException(status_code=404, detail="Event not found.")
     event = event_res.data[0]
+    is_owner = (
+        current_user is not None
+        and str(event.get("organizer_id", "")) == current_user.id
+    )
+    is_platform_admin = (
+        current_user is not None
+        and (current_user.role or "").strip().lower() == ROLE_PLATFORM_ADMIN
+    )
+    is_public = event.get("status") == "published" and event.get("visibility") != "private"
+    if not (is_public or is_owner or is_platform_admin):
+        raise HTTPException(status_code=404, detail="Event not found.")
     tiers = supabase.table("ticket_types").select("*").eq("event_id", event_id).execute()
     event["ticket_types"] = tiers.data or []
     return event
