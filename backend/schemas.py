@@ -60,6 +60,45 @@ class UserProfileUpdateSchema(BaseModel):
     payout_info: Optional[str] = None  # e.g., IBAN / KZT account details
 
 
+class EventCreateSchema(BaseModel):
+    """Payload for creating an organizer event (always stored as draft)."""
+    title: Optional[str] = None
+    description: Optional[str] = None
+    category: Optional[str] = None
+    starts_at: Optional[datetime] = None
+    ends_at: Optional[datetime] = None
+    timezone: Optional[str] = None
+    venue_name: Optional[str] = None
+    venue_address: Optional[str] = None
+    image_url: Optional[str] = None
+    visibility: Optional[str] = None
+    registration_opens_at: Optional[datetime] = None
+    registration_closes_at: Optional[datetime] = None
+    capacity: Optional[int] = None
+
+
+class EventUpdateSchema(EventCreateSchema):
+    """Partial update for an organizer event. Status is not client-writable."""
+    pass
+
+
+class TicketTypeCreateSchema(BaseModel):
+    """Payload for creating a ticket type on an organizer event."""
+    name: Optional[str] = None
+    description: Optional[str] = None
+    price: Optional[int] = None
+    quantity: Optional[int] = None
+    sale_starts_at: Optional[datetime] = None
+    sale_ends_at: Optional[datetime] = None
+    max_per_order: Optional[int] = None
+    is_hidden: Optional[bool] = None
+
+
+class TicketTypeUpdateSchema(TicketTypeCreateSchema):
+    """Partial update for a ticket type, including hide/unhide."""
+    pass
+
+
 class RegisterEventSchema(BaseModel):
     """Schema for registering for an event."""
     ticket_type_id: str
