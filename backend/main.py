@@ -23,6 +23,8 @@ from schemas import (
     UserProfileUpdateSchema,
     EventCreateSchema,
     EventUpdateSchema,
+    TicketTypeCreateSchema,
+    TicketTypeUpdateSchema,
     RegisterEventSchema,
     TicketIssueSchema,
     ROLE_ORGANIZER,
@@ -154,6 +156,76 @@ def load_owned_event(db: Client, event_id: str, current_user: CurrentUser) -> di
             detail="You do not manage this event.",
         )
     return event
+
+
+def sold_count_for_type(db: Client, ticket_type_id: str) -> int:
+    try:
+        res = (
+            db.table("tickets")
+            .select("id")
+            .eq("ticket_type_id", ticket_type_id)
+            .execute()
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        )
+    return len(res.data or [])
+
+
+def sold_counts_for_event(db: Client, event_id: str) -> dict[str, int]:
+    try:
+        res = (
+            db.table("tickets")
+            .select("ticket_type_id")
+            .eq("event_id", event_id)
+            .execute()
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        )
+    counts: dict[str, int] = {}
+    for row in res.data or []:
+        key = str(row.get("ticket_type_id"))
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def with_sold_available(row: dict, sold: int) -> dict:
+    quantity = row.get("quantity")
+    available = None if quantity is None else max(int(quantity) - sold, 0)
+    return {**row, "sold": sold, "available": available}
+
+
+def validate_ticket_type_payload(data: dict, existing: Optional[dict] = None, sold: int = 0) -> None:
+    merged = {**(existing or {}), **data}
+    price = merged.get("price")
+    if price is not None and price < 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="price must be >= 0.",
+        )
+    quantity = merged.get("quantity")
+    if quantity is not None and quantity < 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="quantity must be >= 0.",
+        )
+    if quantity is not None and quantity < sold:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="quantity cannot go below the number already sold.",
+        )
+    starts = merged.get("sale_starts_at")
+    ends = merged.get("sale_ends_at")
+    if starts and ends and str(ends) <= str(starts):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="sale_ends_at must be later than sale_starts_at.",
+        )
 
 
 @app.get("/")
@@ -377,6 +449,117 @@ async def cancel_organizer_event(
     if not response.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found.")
     return response.data[0]
+
+
+@app.post("/api/organizer/events/{event_id}/ticket-types", status_code=status.HTTP_201_CREATED)
+async def create_organizer_ticket_type(
+    event_id: str,
+    payload: TicketTypeCreateSchema,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_organizer(current_user)
+    db = db_for_user(current_user.access_token)
+    load_owned_event(db, event_id, current_user)
+    row = payload.model_dump(exclude_unset=True, mode="json")
+    validate_ticket_type_payload(row)
+    row["event_id"] = event_id
+    if "is_hidden" not in row:
+        row["is_hidden"] = False
+    try:
+        response = db.table("ticket_types").insert(row).execute()
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        )
+    if not response.data:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to create ticket type.",
+        )
+    return with_sold_available(response.data[0], 0)
+
+
+@app.get("/api/organizer/events/{event_id}/ticket-types")
+async def list_organizer_ticket_types(
+    event_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_organizer(current_user)
+    db = db_for_user(current_user.access_token)
+    load_owned_event(db, event_id, current_user)
+    try:
+        response = (
+            db.table("ticket_types")
+            .select("*")
+            .eq("event_id", event_id)
+            .execute()
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        )
+    sold_map = sold_counts_for_event(db, event_id)
+    return [
+        with_sold_available(row, sold_map.get(str(row["id"]), 0))
+        for row in (response.data or [])
+    ]
+
+
+@app.patch("/api/organizer/ticket-types/{ticket_type_id}")
+async def update_organizer_ticket_type(
+    ticket_type_id: str,
+    payload: TicketTypeUpdateSchema,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_organizer(current_user)
+    db = db_for_user(current_user.access_token)
+    try:
+        type_res = (
+            db.table("ticket_types")
+            .select("*")
+            .eq("id", ticket_type_id)
+            .execute()
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        )
+    if not type_res.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Ticket type not found.",
+        )
+    ticket_type = type_res.data[0]
+    load_owned_event(db, str(ticket_type["event_id"]), current_user)
+    update_data = payload.model_dump(exclude_unset=True, mode="json")
+    if not update_data:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No fields provided for update.",
+        )
+    sold = sold_count_for_type(db, ticket_type_id)
+    validate_ticket_type_payload(update_data, existing=ticket_type, sold=sold)
+    try:
+        response = (
+            db.table("ticket_types")
+            .update(update_data)
+            .eq("id", ticket_type_id)
+            .execute()
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        )
+    if not response.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Ticket type not found.",
+        )
+    return with_sold_available(response.data[0], sold)
 
 
 @app.post(
@@ -726,3 +909,23 @@ async def get_event(
     tiers = supabase.table("ticket_types").select("*").eq("event_id", event_id).execute()
     event["ticket_types"] = tiers.data or []
     return event
+
+
+@app.get("/api/events/{event_id}/ticket-types")
+def get_public_ticket_types(event_id: str):
+    event_res = supabase.table("events").select("id,status").eq("id", event_id).execute()
+    if not event_res.data or event_res.data[0].get("status") != "published":
+        raise HTTPException(status_code=404, detail="Event not found.")
+    try:
+        response = (
+            supabase.table("ticket_types")
+            .select("*")
+            .eq("event_id", event_id)
+            .execute()
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        )
+    return [row for row in (response.data or []) if not row.get("is_hidden")]

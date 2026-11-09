@@ -82,6 +82,23 @@ class EventUpdateSchema(EventCreateSchema):
     pass
 
 
+class TicketTypeCreateSchema(BaseModel):
+    """Payload for creating a ticket type on an organizer event."""
+    name: Optional[str] = None
+    description: Optional[str] = None
+    price: Optional[int] = None
+    quantity: Optional[int] = None
+    sale_starts_at: Optional[datetime] = None
+    sale_ends_at: Optional[datetime] = None
+    max_per_order: Optional[int] = None
+    is_hidden: Optional[bool] = None
+
+
+class TicketTypeUpdateSchema(TicketTypeCreateSchema):
+    """Partial update for a ticket type, including hide/unhide."""
+    pass
+
+
 class RegisterEventSchema(BaseModel):
     """Schema for registering for an event."""
     ticket_type_id: str
