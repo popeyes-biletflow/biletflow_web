@@ -7,7 +7,7 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': {
-        target: 'http://localhost:5000', // Укажите порт вашего бэкенда (например: 5000, 8000 или 3000)
+        target: 'http://localhost:8000', // FastAPI / uvicorn default port
         changeOrigin: true,
         secure: false,
       },

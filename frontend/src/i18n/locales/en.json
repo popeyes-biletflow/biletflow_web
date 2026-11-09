@@ -8,7 +8,9 @@
     "hello": "Hi, {{name}}",
     "buy": "Buy ticket",
     "notFound": "Page not found",
-    "toEvents": "Go to events"
+    "toEvents": "Go to events",
+    "organizer": "Organizer",
+    "loginToBuy": "Sign in to get a ticket"
   },
   "discovery": {
     "title": "Discover events",

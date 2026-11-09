@@ -1,1 +1,16 @@
 @import "tailwindcss";
+
+/* Printable ticket (TicketPDF): print only the ticket portal, on A4. */
+@media print {
+  @page {
+    size: A4;
+    margin: 10mm;
+  }
+  body:has(.ticket-print-root) > *:not(.ticket-print-root) {
+    display: none !important;
+  }
+  .ticket-print-root {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}

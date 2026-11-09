@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { useAuth } from '../context/AuthContext';
+import { rememberPendingName } from '../services/session';
+import { ApiError, signup as apiSignup } from '../services/api';
 
 interface Props {
   onSwitchToLogin: () => void;
@@ -12,8 +13,8 @@ export function SignupForm({ onSwitchToLogin, onSuccess }: Props) {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
   const [loading, setLoading] = useState(false);
-  const { login } = useAuth();
 
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -32,23 +33,13 @@ export function SignupForm({ onSwitchToLogin, onSuccess }: Props) {
     setLoading(true);
 
     try {
-      const response = await fetch('/api/auth/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, email, password }),
-      });
-
-      if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error(data.message || 'Ошибка регистрации');
-      }
-
-      const data = await response.json();
-      login(email, data.token || 'mock-jwt-token', { name });
-      if (onSuccess) onSuccess();
-    } catch (err: any) {
-      login(email, 'demo-token-123', { name });
-      if (onSuccess) onSuccess();
+      await apiSignup({ email, password });
+      // The backend only takes email + password; the name is saved to the profile on first login.
+      rememberPendingName(name);
+      setNotice('Аккаунт создан. Подтвердите email (если пришло письмо) и войдите.');
+      if (onSuccess) setTimeout(onSuccess, 1500);
+    } catch (err) {
+      setError(err instanceof ApiError || err instanceof Error ? err.message : 'Ошибка регистрации');
     } finally {
       setLoading(false);
     }
@@ -64,6 +55,12 @@ export function SignupForm({ onSwitchToLogin, onSuccess }: Props) {
         {error && (
           <div className="mb-4 rounded bg-red-100 p-2 text-center text-sm text-red-600">
             {error}
+          </div>
+        )}
+
+        {notice && (
+          <div className="mb-4 rounded bg-emerald-100 p-2 text-center text-sm text-emerald-700">
+            {notice}
           </div>
         )}
 

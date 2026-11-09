@@ -48,7 +48,24 @@ export function normalizeEvent(r: Raw): EventItem {
   };
 }
 
-async function http<T>(path: string, init: RequestInit = {}, token?: string | null): Promise<T> {
+/** FastAPI `detail` can be a string, a validation-error list, or an object (e.g. a checklist). */
+function errorMessage(detail: unknown): string | null {
+  if (!detail) return null;
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) return detail.map((d) => (d && typeof d === 'object' && 'msg' in d ? String(d.msg) : String(d))).join('; ');
+  if (typeof detail === 'object') {
+    const d = detail as Record<string, unknown>;
+    if (typeof d.message === 'string') return d.message;
+    const failed = Object.entries(d)
+      .filter(([, v]) => v && typeof v === 'object' && (v as { passed?: boolean }).passed === false)
+      .map(([k, v]) => `${k}${(v as { detail?: string }).detail ? `: ${(v as { detail?: string }).detail}` : ''}`);
+    if (failed.length) return `Не выполнено: ${failed.join('; ')}`;
+    return JSON.stringify(detail);
+  }
+  return String(detail);
+}
+
+export async function http<T>(path: string, init: RequestInit = {}, token?: string | null): Promise<T> {
   const res = await fetch(`${API_BASE_URL}${path}`, {
     ...init,
     headers: {
@@ -59,7 +76,7 @@ async function http<T>(path: string, init: RequestInit = {}, token?: string | nu
   });
   if (res.status === 204) return undefined as T;
   const data = await res.json().catch(() => null);
-  if (!res.ok) throw new Error(data?.detail ?? `Request failed (${res.status})`);
+  if (!res.ok) throw new Error(errorMessage(data?.detail) ?? `Request failed (${res.status})`);
   return data as T;
 }
 
