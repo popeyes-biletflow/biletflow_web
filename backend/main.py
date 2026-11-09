@@ -42,7 +42,9 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY, options=options)
 app = FastAPI(title="BiletFlow Auth API")
 from promo import lookup_promo, redeem_promo, release_promo
 from orders import FEE_PERCENT
+from routers.analytics import router as analytics_router
 app.include_router(promo_router)
+app.include_router(analytics_router)
 app.include_router(tickets_router)
 app.include_router(support_router)
 app.include_router(organizer_router)
