@@ -11,6 +11,8 @@ import { TicketDashboard } from './pages/TicketDashboard';
 import { EventsPage } from './pages/EventsPage';
 import { EventDetailsPage } from './pages/EventDetailsPage';
 import { OrganizerDashboard } from './pages/OrganizerDashboard';
+import { EventManageRoute } from './pages/EventManagePage';
+import { TicketView } from './pages/TicketView';
 import { getEvent, type EventItem } from './services/events';
 
 const navClass = ({ isActive }: { isActive: boolean }) =>
@@ -19,14 +21,15 @@ const navClass = ({ isActive }: { isActive: boolean }) =>
 /** Buy / register button under the event page; loads the real event so prices come from the backend. */
 function EventPurchase() {
   const { id = '' } = useParams();
-  const { user } = useAuth();
+  const { user, token } = useAuth();
   const { t } = useTranslation();
   const [event, setEvent] = useState<EventItem | null>(null);
   const [open, setOpen] = useState(false);
 
-  useEffect(() => { getEvent(id).then(setEvent).catch(() => setEvent(null)); }, [id]);
+  useEffect(() => { getEvent(id, token).then(setEvent).catch(() => setEvent(null)); }, [id, token]);
 
-  if (!event || event.ticketTiers.length === 0) return null;
+  // drafts and cancelled events can be previewed by the owner but not bought
+  if (!event || event.status !== 'published' || event.ticketTiers.length === 0) return null;
   return (
     <div className="mx-auto max-w-4xl px-6 pb-10">
       {user ? (
@@ -89,7 +92,10 @@ function MainApp() {
         <Route path="/login" element={<LoginForm onSwitchToSignup={() => navigate('/signup')} onSuccess={() => navigate('/events')} />} />
         <Route path="/signup" element={<SignupForm onSwitchToLogin={() => navigate('/login')} onSuccess={() => navigate('/login')} />} />
         <Route path="/tickets" element={user ? <TicketDashboard /> : <Navigate to="/login" replace />} />
+        <Route path="/tickets/:ticketId" element={user ? <TicketView /> : <Navigate to="/login" replace />} />
         <Route path="/organizer" element={user ? <OrganizerDashboard /> : <Navigate to="/login" replace />} />
+        <Route path="/organizer/events/new" element={user ? <EventManageRoute /> : <Navigate to="/login" replace />} />
+        <Route path="/organizer/events/:id" element={user ? <EventManageRoute /> : <Navigate to="/login" replace />} />
         <Route path="*" element={<main className="mx-auto max-w-4xl p-6"><h2 className="text-2xl font-bold">{t('nav.notFound')}</h2><Link to="/events" className="text-blue-600">{t('nav.toEvents')}</Link></main>} />
       </Routes>
     </div>
