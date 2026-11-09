@@ -3,9 +3,14 @@ import { API_BASE_URL } from './config';
 export interface TicketTier {
   id: string;
   name: string;
+  description: string;
   priceKZT: number;
   remaining: number | null;
+  saleStartsAt: string | null;
+  saleEndsAt: string | null;
 }
+
+export type EventStatus = 'draft' | 'published' | 'cancelled';
 
 export interface EventItem {
   id: string;
@@ -18,7 +23,11 @@ export interface EventItem {
   venueName: string;
   venueAddress: string;
   imageUrl: string | null;
-  status: 'draft' | 'published';
+  status: EventStatus;
+  visibility: 'public' | 'unlisted' | 'private';
+  paidSalesActive: boolean;
+  registrationOpensAt: string | null;
+  registrationClosesAt: string | null;
   ticketTiers: TicketTier[];
 }
 
@@ -38,14 +47,33 @@ export function normalizeEvent(r: Raw): EventItem {
     venueName: r.venue_name ?? r.venue ?? r.location ?? '',
     venueAddress: r.venue_address ?? r.address ?? '',
     imageUrl: r.image_url ?? null,
-    status: r.status === 'draft' ? 'draft' : 'published',
-    ticketTiers: tiers.map((t) => ({
+    status: r.status === 'draft' || r.status === 'cancelled' ? r.status : 'published',
+    visibility: r.visibility === 'unlisted' || r.visibility === 'private' ? r.visibility : 'public',
+    paidSalesActive: r.paid_sales_status === 'ACTIVE' && r.paid_sales_active !== false,
+    registrationOpensAt: r.registration_opens_at ?? null,
+    registrationClosesAt: r.registration_closes_at ?? null,
+    ticketTiers: tiers.filter((t) => !t.is_hidden).map((t) => ({
       id: String(t.id),
       name: t.name ?? 'Standard',
+      description: t.description ?? '',
       priceKZT: Number(t.price ?? t.price_kzt ?? 0),
-      remaining: t.quantity ?? t.stock ?? null,
+      remaining: t.available ?? t.quantity ?? t.stock ?? null,
+      saleStartsAt: t.sale_starts_at ?? null,
+      saleEndsAt: t.sale_ends_at ?? null,
     })),
   };
+}
+
+export class HttpError extends Error {
+  readonly status: number;
+  readonly detail: unknown;
+
+  constructor(message: string, status: number, detail: unknown) {
+    super(message);
+    this.name = 'HttpError';
+    this.status = status;
+    this.detail = detail;
+  }
 }
 
 /** FastAPI `detail` can be a string, a validation-error list, or an object (e.g. a checklist). */
@@ -76,7 +104,7 @@ export async function http<T>(path: string, init: RequestInit = {}, token?: stri
   });
   if (res.status === 204) return undefined as T;
   const data = await res.json().catch(() => null);
-  if (!res.ok) throw new Error(errorMessage(data?.detail) ?? `Request failed (${res.status})`);
+  if (!res.ok) throw new HttpError(errorMessage(data?.detail) ?? `Request failed (${res.status})`, res.status, data?.detail);
   return data as T;
 }
 
@@ -86,8 +114,15 @@ export async function getEvents(): Promise<EventItem[]> {
   return rows.map(normalizeEvent).filter((e) => e.status === 'published');
 }
 
-export async function getEvent(id: string): Promise<EventItem> {
-  return normalizeEvent(await http<Raw>(`/api/events/${id}`));
+/** With the organizer's token the owner can also open drafts (preview). */
+export async function getEvent(id: string, token?: string | null): Promise<EventItem> {
+  try {
+    return normalizeEvent(await http<Raw>(`/api/events/${id}`, {}, token));
+  } catch (e) {
+    // an expired session should not hide public events
+    if (token && e instanceof HttpError && e.status === 401) return getEvent(id);
+    throw e;
+  }
 }
 
 export const formatKZT = (n: number) =>

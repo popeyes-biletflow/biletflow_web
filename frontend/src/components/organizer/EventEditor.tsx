@@ -1,20 +1,23 @@
 import { useEffect, useState } from 'react';
-import { formatKZT } from '../../services/events';
+import { useTranslation } from 'react-i18next';
+import { Notice, type NoticeState } from '../Notice';
 import {
   fromLocalInput, organizerApi, toLocalInput,
-  type OrganizerEvent, type OrganizerTicketType,
+  type EventInput, type OrganizerEvent, type Visibility,
 } from '../../services/organizer';
 
 interface Props {
   token: string;
-  event: OrganizerEvent | null; // null = создаём новое
-  onSaved: (e: OrganizerEvent) => void;
-  onClose: () => void;
+  event: OrganizerEvent | null; // null = new event
+  onSaved: (e: OrganizerEvent, created: boolean) => void;
 }
 
-const inputClass = 'mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm';
+export const inputClass = 'mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm disabled:bg-gray-50';
 
-export function EventEditor({ token, event, onSaved, onClose }: Props) {
+const VISIBILITIES: Visibility[] = ['public', 'unlisted', 'private'];
+
+export function EventEditor({ token, event, onSaved }: Props) {
+  const { t } = useTranslation();
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [category, setCategory] = useState('');
@@ -23,21 +26,14 @@ export function EventEditor({ token, event, onSaved, onClose }: Props) {
   const [venueName, setVenueName] = useState('');
   const [venueAddress, setVenueAddress] = useState('');
   const [imageUrl, setImageUrl] = useState('');
-  const [visibility, setVisibility] = useState('public');
+  const [visibility, setVisibility] = useState<Visibility>('public');
   const [capacity, setCapacity] = useState('');
+  const [regOpens, setRegOpens] = useState('');
+  const [regCloses, setRegCloses] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<NoticeState>(null);
 
-  const [types, setTypes] = useState<OrganizerTicketType[]>([]);
-  const [newName, setNewName] = useState('');
-  const [newPrice, setNewPrice] = useState('0');
-  const [newQty, setNewQty] = useState('');
-
-  const [error, setError] = useState('');
-  const [message, setMessage] = useState('');
-
-  // заполняем форму когда выбрали событие
   useEffect(() => {
-    setError('');
-    setMessage('');
     setTitle(event?.title ?? '');
     setDescription(event?.description ?? '');
     setCategory(event?.category ?? '');
@@ -48,18 +44,30 @@ export function EventEditor({ token, event, onSaved, onClose }: Props) {
     setImageUrl(event?.image_url ?? '');
     setVisibility(event?.visibility ?? 'public');
     setCapacity(event?.capacity ? String(event.capacity) : '');
+    setRegOpens(toLocalInput(event?.registration_opens_at ?? null));
+    setRegCloses(toLocalInput(event?.registration_closes_at ?? null));
+  }, [event]);
 
-    if (event) {
-      organizerApi.ticketTypes(token, event.id).then(setTypes).catch((e) => setError(e.message));
-    } else {
-      setTypes([]);
-    }
-  }, [event, token]);
+  const cancelled = event?.status === 'cancelled';
+
+  function validate(): string[] {
+    const errors: string[] = [];
+    if (!title.trim()) errors.push(t('editor.errors.title'));
+    if (!startsAt) errors.push(t('editor.errors.startsAt'));
+    if (endsAt && startsAt && endsAt <= startsAt) errors.push(t('editor.errors.endsAt'));
+    if (regOpens && regCloses && regCloses <= regOpens) errors.push(t('editor.errors.registration'));
+    if (capacity && Number(capacity) < 1) errors.push(t('editor.errors.capacity'));
+    return errors;
+  }
 
   async function save(e: React.FormEvent) {
     e.preventDefault();
-    setError('');
-    const body = {
+    const errors = validate();
+    if (errors.length) {
+      setNotice({ kind: 'error', text: t('editor.fixErrors'), items: errors });
+      return;
+    }
+    const body: EventInput = {
       title: title.trim(),
       description: description || null,
       category: category || null,
@@ -69,186 +77,92 @@ export function EventEditor({ token, event, onSaved, onClose }: Props) {
       venue_name: venueName || null,
       venue_address: venueAddress || null,
       image_url: imageUrl || null,
-      visibility: visibility as 'public' | 'unlisted' | 'private',
+      visibility,
       capacity: capacity ? Number(capacity) : null,
+      registration_opens_at: fromLocalInput(regOpens),
+      registration_closes_at: fromLocalInput(regCloses),
     };
+    setBusy(true);
+    setNotice(null);
     try {
-      let saved;
-      if (event) {
-        saved = await organizerApi.updateEvent(token, event.id, body);
-        setMessage('Сохранено');
-      } else {
-        saved = await organizerApi.createEvent(token, body);
-        setMessage('Черновик создан, теперь добавьте типы билетов');
-      }
-      onSaved(saved);
+      const saved = event
+        ? await organizerApi.updateEvent(token, event.id, body)
+        : await organizerApi.createEvent(token, body);
+      setNotice({ kind: 'success', text: event ? t('editor.saved') : t('editor.created') });
+      onSaved(saved, !event);
     } catch (err) {
-      setError((err as Error).message);
+      setNotice({ kind: 'error', text: t('editor.saveFailed', { reason: (err as Error).message }) });
+    } finally {
+      setBusy(false);
     }
   }
-
-  async function addType(e: React.FormEvent) {
-    e.preventDefault();
-    if (!event) return;
-    try {
-      await organizerApi.createTicketType(token, event.id, {
-        name: newName.trim(),
-        price: Number(newPrice) || 0,
-        quantity: newQty ? Number(newQty) : null,
-      });
-      setNewName('');
-      setNewPrice('0');
-      setNewQty('');
-      setTypes(await organizerApi.ticketTypes(token, event.id));
-    } catch (err) {
-      setError((err as Error).message);
-    }
-  }
-
-  async function toggleHidden(t: OrganizerTicketType) {
-    if (!event) return;
-    try {
-      await organizerApi.updateTicketType(token, t.id, { is_hidden: !t.is_hidden });
-      setTypes(await organizerApi.ticketTypes(token, event.id));
-    } catch (err) {
-      setError((err as Error).message);
-    }
-  }
-
-  async function activate() {
-    if (!event) return;
-    try {
-      const res = await organizerApi.activatePaidSales(token, event.id);
-      setMessage('Платные продажи активированы (симуляция)');
-      onSaved({ ...event, paid_sales_status: res.paid_sales_status as OrganizerEvent['paid_sales_status'] });
-    } catch (err) {
-      setError((err as Error).message);
-    }
-  }
-
-  const hasPaid = types.some((t) => (t.price ?? 0) > 0);
-  const cancelled = event?.status === 'cancelled';
 
   return (
-    <section className="space-y-6 rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-      <div className="flex justify-between">
-        <h3 className="text-lg font-semibold">{event ? `Событие: ${event.title}` : 'Новое событие'}</h3>
-        <button onClick={onClose} className="text-xl text-gray-400">&times;</button>
-      </div>
+    <form onSubmit={save} noValidate className="space-y-5">
+      <Notice notice={notice} onClose={() => setNotice(null)} />
+      {cancelled && <Notice notice={{ kind: 'info', text: t('editor.cancelledReadOnly') }} />}
 
-      {error && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}
-      {message && <p className="rounded-lg bg-emerald-50 p-3 text-sm text-emerald-800">{message}</p>}
+      <fieldset disabled={cancelled || busy} className="grid gap-4 sm:grid-cols-2">
+        <label className="text-sm sm:col-span-2">{t('editor.title')} *
+          <input value={title} onChange={(e) => setTitle(e.target.value)} className={inputClass} />
+        </label>
+        <label className="text-sm">{t('editor.startsAt')} *
+          <input type="datetime-local" value={startsAt} onChange={(e) => setStartsAt(e.target.value)} className={inputClass} />
+        </label>
+        <label className="text-sm">{t('editor.endsAt')}
+          <input type="datetime-local" value={endsAt} onChange={(e) => setEndsAt(e.target.value)} className={inputClass} />
+        </label>
+        <label className="text-sm">{t('editor.venueName')} *
+          <input value={venueName} onChange={(e) => setVenueName(e.target.value)} className={inputClass} />
+        </label>
+        <label className="text-sm">{t('editor.venueAddress')}
+          <input value={venueAddress} onChange={(e) => setVenueAddress(e.target.value)} className={inputClass} />
+        </label>
+        <label className="text-sm">{t('editor.category')}
+          <input value={category} onChange={(e) => setCategory(e.target.value)} className={inputClass} />
+        </label>
+        <label className="text-sm">{t('editor.imageUrl')}
+          <input type="url" value={imageUrl} onChange={(e) => setImageUrl(e.target.value)} className={inputClass} />
+        </label>
+        <label className="text-sm sm:col-span-2">{t('editor.description')}
+          <textarea rows={3} value={description} onChange={(e) => setDescription(e.target.value)} className={inputClass} />
+        </label>
+      </fieldset>
 
-      <form onSubmit={save} className="grid gap-4 sm:grid-cols-2">
-        <label className="text-sm sm:col-span-2">Название *
-          <input required value={title} onChange={(e) => setTitle(e.target.value)} disabled={cancelled} className={inputClass} />
-        </label>
-        <label className="text-sm">Начало (Астана) *
-          <input required type="datetime-local" value={startsAt} onChange={(e) => setStartsAt(e.target.value)} disabled={cancelled} className={inputClass} />
-        </label>
-        <label className="text-sm">Окончание
-          <input type="datetime-local" value={endsAt} onChange={(e) => setEndsAt(e.target.value)} disabled={cancelled} className={inputClass} />
-        </label>
-        <label className="text-sm">Площадка *
-          <input value={venueName} onChange={(e) => setVenueName(e.target.value)} disabled={cancelled} className={inputClass} />
-        </label>
-        <label className="text-sm">Адрес
-          <input value={venueAddress} onChange={(e) => setVenueAddress(e.target.value)} disabled={cancelled} className={inputClass} />
-        </label>
-        <label className="text-sm">Категория
-          <input value={category} onChange={(e) => setCategory(e.target.value)} disabled={cancelled} className={inputClass} />
-        </label>
-        <label className="text-sm">Вместимость
-          <input type="number" min={0} value={capacity} onChange={(e) => setCapacity(e.target.value)} disabled={cancelled} className={inputClass} />
-        </label>
-        <label className="text-sm">Видимость
-          <select value={visibility} onChange={(e) => setVisibility(e.target.value)} disabled={cancelled} className={inputClass}>
-            <option value="public">Публичное</option>
-            <option value="unlisted">По ссылке</option>
-            <option value="private">Приватное</option>
-          </select>
-        </label>
-        <label className="text-sm">Ссылка на картинку
-          <input type="url" value={imageUrl} onChange={(e) => setImageUrl(e.target.value)} disabled={cancelled} className={inputClass} />
-        </label>
-        <label className="text-sm sm:col-span-2">Описание
-          <textarea rows={3} value={description} onChange={(e) => setDescription(e.target.value)} disabled={cancelled} className={inputClass} />
-        </label>
+      <fieldset disabled={cancelled || busy} className="grid gap-4 rounded-lg border border-gray-200 p-4 sm:grid-cols-2">
+        <legend className="px-1 text-sm font-semibold">{t('editor.accessTitle')}</legend>
         <div className="sm:col-span-2">
-          <button
-            disabled={cancelled || !title || !startsAt}
-            className="rounded-lg bg-blue-600 px-5 py-2 text-sm font-semibold text-white disabled:opacity-50"
-          >
-            {event ? 'Сохранить' : 'Создать черновик'}
-          </button>
+          <p className="text-sm">{t('editor.visibility')}</p>
+          <div className="mt-2 grid gap-2 sm:grid-cols-3">
+            {VISIBILITIES.map((v) => (
+              <label key={v} className={`cursor-pointer rounded-lg border p-3 text-sm ${visibility === v ? 'border-blue-500 bg-blue-50' : 'border-gray-200'}`}>
+                <span className="flex items-center gap-2 font-medium">
+                  <input type="radio" name="visibility" value={v} checked={visibility === v} onChange={() => setVisibility(v)} />
+                  {t(`visibility.${v}`)}
+                </span>
+                <span className="mt-1 block text-xs text-gray-500">{t(`visibility.${v}Hint`)}</span>
+              </label>
+            ))}
+          </div>
         </div>
-      </form>
+        <label className="text-sm">{t('editor.registrationOpens')}
+          <input type="datetime-local" value={regOpens} onChange={(e) => setRegOpens(e.target.value)} className={inputClass} />
+        </label>
+        <label className="text-sm">{t('editor.registrationCloses')}
+          <input type="datetime-local" value={regCloses} onChange={(e) => setRegCloses(e.target.value)} className={inputClass} />
+        </label>
+        <label className="text-sm">{t('editor.capacity')}
+          <input type="number" min={1} placeholder="∞" value={capacity} onChange={(e) => setCapacity(e.target.value)} className={inputClass} />
+          <span className="mt-1 block text-xs text-gray-500">{t('editor.capacityHint')}</span>
+        </label>
+        <p className="self-end text-xs text-gray-500">{t('editor.timezoneHint')}</p>
+      </fieldset>
 
-      {event && (
-        <div className="space-y-3 border-t pt-5">
-          <h4 className="font-semibold">Типы билетов</h4>
-
-          {types.length === 0 && <p className="text-sm text-gray-500">Нужен хотя бы один тип билета, чтобы опубликовать событие.</p>}
-
-          {types.length > 0 && (
-            <table className="w-full text-sm">
-              <thead className="text-left text-xs text-gray-500">
-                <tr><th>Название</th><th className="text-right">Цена</th><th className="text-right">Продано / всего</th><th></th></tr>
-              </thead>
-              <tbody>
-                {types.map((t) => (
-                  <tr key={t.id} className="border-t">
-                    <td className="py-2">{t.name} {t.is_hidden && <span className="text-xs text-gray-500">(скрыт)</span>}</td>
-                    <td className="text-right">{(t.price ?? 0) > 0 ? formatKZT(t.price ?? 0) : 'Бесплатно'}</td>
-                    <td className="text-right">{t.sold} / {t.quantity ?? '∞'}</td>
-                    <td className="text-right">
-                      <button onClick={() => toggleHidden(t)} disabled={cancelled} className="text-xs font-semibold text-gray-600">
-                        {t.is_hidden ? 'Показать' : 'Скрыть'}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-
-          {!cancelled && (
-            <form onSubmit={addType} className="grid gap-2 sm:grid-cols-[1fr_8rem_8rem_auto] sm:items-end">
-              <label className="text-xs">Название
-                <input required value={newName} onChange={(e) => setNewName(e.target.value)} className={inputClass} />
-              </label>
-              <label className="text-xs">Цена, ₸
-                <input type="number" min={0} value={newPrice} onChange={(e) => setNewPrice(e.target.value)} className={inputClass} />
-              </label>
-              <label className="text-xs">Кол-во
-                <input type="number" min={0} placeholder="∞" value={newQty} onChange={(e) => setNewQty(e.target.value)} className={inputClass} />
-              </label>
-              <button disabled={!newName.trim()} className="rounded-lg bg-gray-800 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">
-                Добавить
-              </button>
-            </form>
-          )}
-
-          {hasPaid && !cancelled && (
-            <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm">
-              <p className="font-semibold">
-                Платные продажи:{' '}
-                {event.paid_sales_status === 'ACTIVE' ? 'активны' : event.paid_sales_status === 'SUSPENDED' ? 'приостановлены админом' : 'не активированы'}
-              </p>
-              {event.paid_sales_status !== 'ACTIVE' && event.paid_sales_status !== 'SUSPENDED' && (
-                <>
-                  <p className="mt-1 text-amber-800">
-                    Нужны платный билет, реквизиты в профиле и согласие с условиями. Оплата сбора — симуляция.
-                  </p>
-                  <button onClick={activate} className="mt-3 rounded-lg bg-amber-600 px-4 py-2 text-sm font-semibold text-white">
-                    Принять условия и активировать
-                  </button>
-                </>
-              )}
-            </div>
-          )}
-        </div>
+      {!cancelled && (
+        <button disabled={busy} className="rounded-lg bg-blue-600 px-5 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50">
+          {busy ? t('common.saving') : event ? t('editor.save') : t('editor.createDraft')}
+        </button>
       )}
-    </section>
+    </form>
   );
 }

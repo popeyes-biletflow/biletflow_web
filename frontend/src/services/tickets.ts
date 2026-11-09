@@ -1,4 +1,7 @@
+import i18n, { formatEventDate } from '../i18n';
 import { http } from './events';
+
+export type TicketStatus = 'ACTIVE' | 'USED' | 'CANCELLED' | 'REFUNDED' | 'CANCEL_PENDING';
 
 /** Row returned by GET /api/me/tickets */
 export interface MyTicket {
@@ -18,7 +21,7 @@ export interface MyTicket {
   total_kzt: number;
   promo_code: string | null;
   purchased_at: string | null;
-  status: 'ACTIVE' | 'USED' | 'CANCELLED' | 'CANCEL_PENDING';
+  status: TicketStatus;
   refund_case_id: string | null;
   checked_in_at: string | null;
   qr_payload: string | null;
@@ -70,8 +73,8 @@ export const ticketsApi = {
         method: 'POST',
         body: JSON.stringify({
           category: 'refund',
-          subject: `Отмена билета: ${ticket.event_title}`,
-          message: reason.trim() || 'Прошу отменить билет.',
+          subject: i18n.t('orders.cancelSubject', { event: ticket.event_title }),
+          message: reason.trim() || i18n.t('orders.cancelDefaultReason'),
           ticket_id: ticket.id,
         }),
       },
@@ -92,7 +95,5 @@ export const clearCampaignPromo = () => {
   try { sessionStorage.removeItem(PROMO_KEY); } catch { /* storage unavailable */ }
 };
 
-export const formatEventDateTime =(iso: string | null, tz = 'Asia/Almaty') =>
-  iso
-    ? new Intl.DateTimeFormat('ru-RU', { dateStyle: 'long', timeStyle: 'short', timeZone: tz }).format(new Date(iso))
-    : 'Дата уточняется';
+export const formatEventDateTime = (iso: string | null, tz = 'Asia/Almaty') =>
+  iso ? formatEventDate(iso, tz, 'full') : i18n.t('common.dateTBA');
