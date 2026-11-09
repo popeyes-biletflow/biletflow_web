@@ -102,6 +102,24 @@ class TicketTypeUpdateSchema(TicketTypeCreateSchema):
 class RegisterEventSchema(BaseModel):
     """Schema for registering for an event."""
     ticket_type_id: str
+    promo_code: Optional[str] = None
+
+
+class CheckoutQuoteRequest(BaseModel):
+    """Price preview before the (simulated) payment is confirmed."""
+    ticket_type_id: str
+    promo_code: Optional[str] = None
+
+
+class CheckoutQuoteResponse(BaseModel):
+    ticket_type_id: str
+    subtotal_kzt: int
+    discount_kzt: int
+    fee_kzt: int
+    total_kzt: int
+    promo_code: Optional[str] = None
+    discount_percent: int = 0
+    simulated: bool = True
 
 
 class TicketIssueSchema(BaseModel):
@@ -116,6 +134,7 @@ class TicketIssueSchema(BaseModel):
     qr_payload: str  # Encoded string sent to UI for rendering the QR code image
     checked_in_at: Optional[datetime] = None
     checked_in_by: Optional[str] = None
+    pricing: Optional[CheckoutQuoteResponse] = None
 
 # PB-11 schemas
 class TicketIssueRequest(BaseModel):

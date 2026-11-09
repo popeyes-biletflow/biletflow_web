@@ -85,6 +85,47 @@ def now_utc():
 def to_utc(dt):
     return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
 
+def lookup_promo(code: str) -> dict:
+    """Validate a promo code without redeeming it. Raises HTTPException with a clear message."""
+    code = code.strip().upper()
+    conn = get_conn()
+    try:
+        promo = conn.execute(
+            """SELECT p.id, p.code, p.max_uses, p.used_count, c.discount_percent, c.starts_at, c.ends_at
+               FROM promo_codes p JOIN campaigns c ON c.id = p.campaign_id WHERE p.code = ?""",
+            (code,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if promo is None:
+        raise HTTPException(404, "Promo code not found")
+    now = now_utc()
+    if not (datetime.fromisoformat(promo["starts_at"]) <= now <= datetime.fromisoformat(promo["ends_at"])):
+        raise HTTPException(400, "Campaign is not active")
+    if promo["used_count"] >= promo["max_uses"]:
+        raise HTTPException(400, "Promo code usage limit reached")
+    return dict(promo)
+
+
+def redeem_promo(code: str) -> dict:
+    """Atomically consume one use of a promo code; raises if it is no longer redeemable."""
+    promo = lookup_promo(code)
+    with transaction() as db:
+        cur = db.execute(
+            "UPDATE promo_codes SET used_count = used_count + 1 WHERE id = ? AND used_count < max_uses",
+            (promo["id"],),
+        )
+        if cur.rowcount == 0:
+            raise HTTPException(400, "Promo code usage limit reached")
+    return promo
+
+
+def release_promo(promo_id: int) -> None:
+    """Give back a use consumed by ``redeem_promo`` when the order could not be created."""
+    with transaction() as db:
+        db.execute("UPDATE promo_codes SET used_count = used_count - 1 WHERE id = ? AND used_count > 0", (promo_id,))
+
+
 class CampaignIn(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     discount_percent: int = Field(ge=1, le=100)
@@ -197,4 +238,6 @@ def campaign_link(slug: str):
         if row is None:
             raise HTTPException(404, "Link not found")
         db.execute("UPDATE campaigns SET qr_scans = qr_scans + 1 WHERE id = ?", (row["id"],))
-    return RedirectResponse(f"/checkout?promo={row['code']}")
+    # The QR is served by the API host; send the browser to the web app, which applies the code at checkout.
+    frontend = os.getenv("FRONTEND_URL", "http://localhost:5173").rstrip("/")
+    return RedirectResponse(f"{frontend}/checkout?promo={row['code']}")
