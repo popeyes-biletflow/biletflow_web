@@ -66,6 +66,9 @@ alter table campaigns      enable row level security;
 alter table promo_codes    enable row level security;
 alter table campaign_scans enable row level security;
 alter table ticket_holds   enable row level security;
+alter table orders drop constraint if exists orders_status_check;ы
+alter table orders add constraint orders_status_check
+  check (status in ('pending', 'completed', 'cancelled', 'paid', 'refunded'));
 
 drop policy if exists "own holds" on ticket_holds;
 create policy "own holds" on ticket_holds
