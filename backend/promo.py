@@ -118,6 +118,20 @@ def campaign_link(slug: str):
     data = call_rpc(supabase, "register_campaign_scan", {"p_slug": slug})
     if not data:
         raise HTTPException(404, "Link not found or campaign inactive")
-    return RedirectResponse(
-        f"{FRONTEND_URL}/events/{data['event_id']}?promo={data['code']}", status_code=302
-    )
+        return RedirectResponse(f"{FRONTEND_URL}/checkout?promo={data['code']}", status_code=302)
+
+def lookup_promo(code: str) -> dict:
+    data = call_rpc(supabase, "lookup_promo_code", {"p_code": code})
+    if not data:
+        raise HTTPException(404, "Promo code not found")
+    if not data["active"]:
+        raise HTTPException(400, "Campaign is not active")
+    if data["used"] >= data["max_uses"]:
+        raise HTTPException(400, "Promo code usage limit reached")
+    return data
+
+def redeem_promo(code: str) -> dict:
+    return lookup_promo(code)
+
+def release_promo(promo_id) -> None:
+    pass

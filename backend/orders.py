@@ -20,6 +20,7 @@ router = APIRouter()
 
 RATES = {"KZT": Decimal("1"), "USD": Decimal("500"), "EUR": Decimal("550"), "RUB": Decimal("5.5")}
 DECIMALS = {"KZT": 0, "USD": 2, "EUR": 2, "RUB": 2}
+FEE_PERCENT = 5
 
 
 class OrderIn(BaseModel):

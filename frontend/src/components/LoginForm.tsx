@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { API_BASE_URL } from '../services/config';
+import { ApiError, login as apiLogin } from '../services/api';
 
 interface Props {
   onSwitchToSignup: () => void;
@@ -26,24 +26,11 @@ export function LoginForm({ onSwitchToSignup, onSuccess }: Props) {
     setLoading(true);
 
     try {
-      const response = await fetch(`${API_BASE_URL}/api/auth/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
-      });
-
-      if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error(data.detail || data.message || 'Ошибка входа');
-      }
-
-      const data = await response.json();
-      login(email, data.access_token || data.token || 'mock-jwt-token', data.user);
+      const data = await apiLogin({ email, password });
+      login(data.email, data.access_token, { id: data.user_id });
       if (onSuccess) onSuccess();
-    } catch (err: any) {
-      // Фолбэк для работы UI без запущенного бэкенда
-      login(email, 'demo-token-123', { name: email.split('@')[0] });
-      if (onSuccess) onSuccess();
+    } catch (err) {
+      setError(err instanceof ApiError || err instanceof Error ? err.message : 'Ошибка входа');
     } finally {
       setLoading(false);
     }

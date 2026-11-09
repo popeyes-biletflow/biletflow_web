@@ -27,6 +27,8 @@ from schemas import (
     TicketTypeUpdateSchema,
     RegisterEventSchema,
     TicketIssueSchema,
+    CheckoutQuoteRequest,
+    CheckoutQuoteResponse,
     ROLE_ORGANIZER,
     ROLE_PLATFORM_ADMIN,
 )
@@ -38,9 +40,11 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 options = ClientOptions(httpx_client=httpx.Client(verify=False))
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY, options=options)
 app = FastAPI(title="BiletFlow Auth API")
-from promo import router as promo_router
-from routers.tickets import router as tickets_router
+from promo import lookup_promo, redeem_promo, release_promo
+from orders import FEE_PERCENT
+from routers.analytics import router as analytics_router
 app.include_router(promo_router)
+app.include_router(analytics_router)
 app.include_router(tickets_router)
 app.include_router(support_router)
 app.include_router(organizer_router)
@@ -60,14 +64,32 @@ def db_for_user(token: str) -> Client:
     return client
 
 
-def make_qr_payload(ticket_id: str, event_id: str, user_id: str) -> tuple[str, str]:
-    """Legacy QR helper kept for the event-registration flow.
+QR_GRACE_SECONDS = 24 * 3600
+QR_FALLBACK_SECONDS = 365 * 24 * 3600
 
-    Delegates to the canonical ``generate_hmac_signature`` from ``crypto``.
-    Uses a fixed 72-hour expiry.
+
+def qr_expiry_for_event(event: Optional[dict]) -> int:
+    """QR codes stay valid until 24h after the event ends (or starts).
+
+    Deriving the expiry from the event (instead of "now + 72h") keeps the
+    payload stable, so the same ticket re-downloaded later yields the same QR,
+    and a ticket bought weeks in advance is still scannable at the door.
     """
     import time
-    expires_at: int = int(time.time()) + 72 * 3600
+    from datetime import datetime as _dt
+
+    raw = (event or {}).get("ends_at") or (event or {}).get("starts_at")
+    if raw:
+        try:
+            return int(_dt.fromisoformat(str(raw).replace("Z", "+00:00")).timestamp()) + QR_GRACE_SECONDS
+        except ValueError:
+            pass
+    return int(time.time()) + QR_FALLBACK_SECONDS
+
+
+def make_qr_payload(ticket_id: str, event_id: str, user_id: str, event: Optional[dict] = None) -> tuple[str, str]:
+    """Build the signed QR payload ``ticket_id:event_id:user_id:expires_at:signature``."""
+    expires_at = qr_expiry_for_event(event)
     signature = generate_hmac_signature(ticket_id, event_id, user_id, expires_at)
     qr_payload = f"{ticket_id}:{event_id}:{user_id}:{expires_at}:{signature}"
     return qr_payload, signature
@@ -693,6 +715,83 @@ async def update_me(
     )
 
 
+# ---------------------------------------------------------------------------
+# Checkout: pricing, registration / simulated purchase, attendee tickets
+# ---------------------------------------------------------------------------
+def compute_pricing(ticket_type: dict, promo: Optional[dict]) -> CheckoutQuoteResponse:
+    """Server-side price calculation (the client never sends amounts)."""
+    subtotal = int(ticket_type.get("price") or 0)
+    percent = int(promo["discount_percent"]) if promo and subtotal > 0 else 0
+    discount = subtotal * percent // 100
+    net = subtotal - discount
+    fee = (net * FEE_PERCENT + 50) // 100 if net > 0 else 0
+    return CheckoutQuoteResponse(
+        ticket_type_id=str(ticket_type["id"]),
+        subtotal_kzt=subtotal,
+        discount_kzt=discount,
+        fee_kzt=fee,
+        total_kzt=net + fee,
+        promo_code=promo["code"] if promo and percent else None,
+        discount_percent=percent,
+    )
+
+
+def _parse_ts(raw) -> "datetime":
+    from datetime import datetime as _dt
+    return _dt.fromisoformat(str(raw).replace("Z", "+00:00"))
+
+
+def load_purchasable_ticket_type(db: Client, event_id: str, ticket_type_id: str) -> tuple[dict, dict]:
+    """Return (event, ticket_type) or raise if the ticket cannot be sold right now."""
+    from datetime import datetime as _dt, timezone as _tz
+
+    try:
+        event_res = db.table("events").select("*").eq("id", event_id).execute()
+        type_res = db.table("ticket_types").select("*").eq("id", ticket_type_id).execute()
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+    if not event_res.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found.")
+    if not type_res.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ticket type not found.")
+    event, ticket_type = event_res.data[0], type_res.data[0]
+
+    if str(ticket_type["event_id"]) != event_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Ticket type does not belong to this event.")
+    if event.get("status") != "published":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This event is not open for registration.")
+    if ticket_type.get("is_hidden"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ticket type not found.")
+
+    now = _dt.now(_tz.utc)
+    if ticket_type.get("sale_starts_at") and now < _parse_ts(ticket_type["sale_starts_at"]):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Ticket sales have not started yet.")
+    if ticket_type.get("sale_ends_at") and now > _parse_ts(ticket_type["sale_ends_at"]):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Ticket sales have ended.")
+
+    # Paid-sales guard: paid tickets require an activated event.
+    if (ticket_type.get("price") or 0) > 0:
+        if event.get("paid_sales_status", "NONE") != "ACTIVE" or not event.get("paid_sales_active"):
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail="Paid ticket sales are not yet activated for this event. The organizer must activate paid sales first.",
+            )
+    return event, ticket_type
+
+
+@app.post("/api/events/{event_id}/checkout/quote", response_model=CheckoutQuoteResponse)
+async def checkout_quote(
+    event_id: str,
+    payload: CheckoutQuoteRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Preview subtotal / discount / fee / total. Does not reserve stock or consume the promo code."""
+    db = db_for_user(current_user.access_token)
+    _, ticket_type = load_purchasable_ticket_type(db, event_id, payload.ticket_type_id)
+    promo = lookup_promo(payload.promo_code) if payload.promo_code and payload.promo_code.strip() else None
+    return compute_pricing(ticket_type, promo)
+
+
 @app.post(
     "/api/events/{event_id}/register",
     response_model=TicketIssueSchema,
@@ -703,109 +802,59 @@ async def register_for_event(
     payload: RegisterEventSchema,
     current_user: CurrentUser = Depends(get_current_user),
 ):
+    """Register (free) or buy (simulated payment) one ticket and issue it with a signed QR."""
     db = db_for_user(current_user.access_token)
     ticket_type_id = payload.ticket_type_id
-
-    try:
-        event_res = db.table("events").select("*").eq("id", event_id).execute()
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e),
-        )
-    if not event_res.data:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found.")
-
-    try:
-        type_res = (
-            db.table("ticket_types")
-            .select("*")
-            .eq("id", ticket_type_id)
-            .execute()
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e),
-        )
-    if not type_res.data:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Ticket type not found.",
-        )
-
-    ticket_type = type_res.data[0]
-    if str(ticket_type["event_id"]) != event_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Ticket type does not belong to this event.",
-        )
-
-    # Paid-sales guard: if ticket type has a price, the event must have
-    # paid_sales_status == 'ACTIVE' and paid_sales_active == True.
-    ticket_price = ticket_type.get("price") or 0
-    if ticket_price > 0:
-        event_full = event_res.data[0]
-        paid_sales_status = event_full.get("paid_sales_status", "NONE")
-        paid_sales_active = bool(event_full.get("paid_sales_active", False))
-        if paid_sales_status != "ACTIVE" or not paid_sales_active:
-            raise HTTPException(
-                status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                detail=(
-                    "Paid ticket sales are not yet activated for this event. "
-                    "The organizer must activate paid sales first."
-                ),
-            )
+    event, ticket_type = load_purchasable_ticket_type(db, event_id, ticket_type_id)
 
     try:
         existing = (
             db.table("tickets")
-            .select("id")
+            .select("id, status")
             .eq("user_id", current_user.id)
             .eq("event_id", event_id)
             .execute()
         )
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e),
-        )
-    if existing.data:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Already registered for this event.",
-        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+    if any((t.get("status") or "").lower() not in ("cancelled", "refunded") for t in existing.data or []):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Already registered for this event.")
 
     quantity = ticket_type.get("quantity")
     if quantity is not None and quantity <= 0:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This ticket type is sold out.",
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This ticket type is sold out.")
+
+    promo = None
+    if payload.promo_code and payload.promo_code.strip() and (ticket_type.get("price") or 0) > 0:
+        promo = redeem_promo(payload.promo_code)
+    pricing = compute_pricing(ticket_type, promo)
 
     ticket_id = str(uuid.uuid4())
-    qr_payload, signature = make_qr_payload(ticket_id, event_id, current_user.id)
+    qr_payload, signature = make_qr_payload(ticket_id, event_id, current_user.id, event)
 
+    order_res = None
     try:
         order_res = (
             db.table("orders")
             .insert({
                 "user_id": current_user.id,
-                "total_amount": ticket_type.get("price") or 0,
+                "total_amount": pricing.total_kzt,
+                "subtotal_amount": pricing.subtotal_kzt,
+                "discount_amount": pricing.discount_kzt,
+                "fee_amount": pricing.fee_kzt,
+                "promo_code": pricing.promo_code,
                 "status": "completed",
             })
             .execute()
         )
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e),
-        )
+        if promo:
+            release_promo(promo["id"])
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
     if not order_res.data:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to create order.",
-        )
+        if promo:
+            release_promo(promo["id"])
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create order.")
     order_id = str(order_res.data[0]["id"])
 
     try:
@@ -823,37 +872,20 @@ async def register_for_event(
             .execute()
         )
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e),
-        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
     if not ticket_res.data:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to issue ticket.",
-        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to issue ticket.")
 
     # Decrement inventory atomically via Postgres RPC
     if quantity is not None:
         try:
-            rpc_res = db.rpc(
-                "decrement_ticket_quantity",
-                {"p_ticket_type_id": ticket_type_id}
-            ).execute()
-
-            # If rpc returns False, another request took the last ticket
+            rpc_res = db.rpc("decrement_ticket_quantity", {"p_ticket_type_id": ticket_type_id}).execute()
             if not rpc_res.data:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="This ticket type is sold out.",
-                )
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This ticket type is sold out.")
         except HTTPException:
             raise
         except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=str(e),
-            )
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
     row = ticket_res.data[0]
     return TicketIssueSchema(
@@ -867,7 +899,97 @@ async def register_for_event(
         checked_in_at=row.get("checked_in_at"),
         checked_in_by=str(row["checked_in_by"]) if row.get("checked_in_by") else None,
         qr_payload=qr_payload,
+        pricing=pricing,
     )
+
+
+def attendee_ticket_status(ticket: dict, event: dict, refund_case: Optional[dict]) -> str:
+    """Map DB ticket status + event state + open refund request to the dashboard status."""
+    raw = (ticket.get("status") or "").lower()
+    if raw in ("cancelled", "refunded") or event.get("status") == "cancelled":
+        return "CANCELLED"
+    if raw in ("checked_in", "used"):
+        return "USED"
+    if refund_case and refund_case.get("status") != "RESOLVED":
+        return "CANCEL_PENDING"
+    return "ACTIVE"
+
+
+@app.get("/api/me/tickets")
+async def my_tickets(current_user: CurrentUser = Depends(get_current_user)):
+    """All tickets of the signed-in attendee with event, pricing and a signed QR payload."""
+    db = db_for_user(current_user.access_token)
+    try:
+        tickets = db.table("tickets").select("*").eq("user_id", current_user.id).execute().data or []
+        if not tickets:
+            return []
+        event_ids = list({str(t["event_id"]) for t in tickets})
+        type_ids = list({str(t["ticket_type_id"]) for t in tickets if t.get("ticket_type_id")})
+        order_ids = list({str(t["order_id"]) for t in tickets if t.get("order_id")})
+        ticket_ids = [str(t["id"]) for t in tickets]
+        events = {str(e["id"]): e for e in db.table("events").select("*").in_("id", event_ids).execute().data or []}
+        types = (
+            {str(t["id"]): t for t in db.table("ticket_types").select("*").in_("id", type_ids).execute().data or []}
+            if type_ids else {}
+        )
+        orders = (
+            {str(o["id"]): o for o in db.table("orders").select("*").in_("id", order_ids).execute().data or []}
+            if order_ids else {}
+        )
+        cases = (
+            db.table("support_cases")
+            .select("id, ticket_id, status, created_at")
+            .eq("requester_id", current_user.id)
+            .eq("category", "refund")
+            .in_("ticket_id", ticket_ids)
+            .execute()
+            .data
+            or []
+        )
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+    latest_case: dict[str, dict] = {}
+    for c in sorted(cases, key=lambda c: str(c.get("created_at") or "")):
+        latest_case[str(c["ticket_id"])] = c
+
+    result = []
+    for t in tickets:
+        tid = str(t["id"])
+        event = events.get(str(t["event_id"]), {})
+        ttype = types.get(str(t.get("ticket_type_id")), {})
+        order = orders.get(str(t.get("order_id")), {})
+        case = latest_case.get(tid)
+        state = attendee_ticket_status(t, event, case)
+        price = int(ttype.get("price") or 0)
+        subtotal = order.get("subtotal_amount")
+        total = order.get("total_amount")
+        usable = state in ("ACTIVE", "CANCEL_PENDING")
+        result.append({
+            "id": tid,
+            "order_id": str(t.get("order_id") or ""),
+            "event_id": str(t["event_id"]),
+            "event_title": event.get("title") or "—",
+            "starts_at": event.get("starts_at"),
+            "ends_at": event.get("ends_at"),
+            "timezone": event.get("timezone") or "Asia/Almaty",
+            "venue_name": event.get("venue_name") or "",
+            "venue_address": event.get("venue_address") or "",
+            "ticket_type": ttype.get("name") or "—",
+            "subtotal_kzt": int(subtotal if subtotal is not None else price),
+            "discount_kzt": int(order.get("discount_amount") or 0),
+            "fee_kzt": int(order.get("fee_amount") or 0),
+            "total_kzt": int(total if total is not None else price),
+            "promo_code": order.get("promo_code"),
+            "purchased_at": order.get("created_at"),
+            "status": state,
+            "refund_case_id": str(case["id"]) if case else None,
+            "checked_in_at": t.get("checked_in_at"),
+            # A QR is only handed out for tickets that can still be used for admission.
+            "qr_payload": make_qr_payload(tid, str(t["event_id"]), current_user.id, event)[0] if usable else None,
+        })
+    result.sort(key=lambda r: str(r.get("starts_at") or ""), reverse=True)
+    return result
 
 
 # ---------------------------------------------------------------------------
