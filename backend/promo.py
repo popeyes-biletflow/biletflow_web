@@ -118,7 +118,7 @@ def campaign_link(slug: str):
     data = call_rpc(supabase, "register_campaign_scan", {"p_slug": slug})
     if not data:
         raise HTTPException(404, "Link not found or campaign inactive")
-        return RedirectResponse(f"{FRONTEND_URL}/checkout?promo={data['code']}", status_code=302)
+    return RedirectResponse(f"{FRONTEND_URL}/checkout?promo={data['code']}", status_code=302)
 
 def lookup_promo(code: str) -> dict:
     data = call_rpc(supabase, "lookup_promo_code", {"p_code": code})
