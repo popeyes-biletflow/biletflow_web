@@ -1,7 +1,7 @@
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 os.environ.setdefault("SUPABASE_URL", "http://localhost:54321")
 os.environ.setdefault("SUPABASE_KEY", "dummy-key")
@@ -300,4 +300,27 @@ def test_duplicate_foreign_event_forbidden():
     as_user(ROLE_ORGANIZER)
     with patch("routers.event_history.db_for_user", return_value=rpc_raises("NOT_EVENT_OWNER")):
         resp = client.post(f"/api/organizer/events/{EVENT_ID}/duplicate", json={})
+    assert resp.status_code == 403
+
+
+def test_analytics_alias_without_event_returns_dashboard():
+    as_user(ROLE_ORGANIZER)
+    with patch("routers.event_history.organizer_dashboard", new=AsyncMock(return_value={"totals": {}, "events": []})) as dash:
+        resp = client.get("/api/organizer/analytics")
+    assert resp.status_code == 200
+    assert resp.json() == {"totals": {}, "events": []}
+    dash.assert_awaited_once()
+
+def test_analytics_alias_with_event_returns_event_analytics():
+    as_user(ROLE_ORGANIZER)
+    with patch("routers.event_history.event_analytics", new=AsyncMock(return_value={"event": {"id": EVENT_ID}})) as ev:
+        resp = client.get(f"/api/organizer/analytics?event_id={EVENT_ID}&date_from=2026-11-01")
+    assert resp.status_code == 200
+    kwargs = ev.await_args.kwargs
+    assert kwargs["event_id"] == EVENT_ID
+    assert str(kwargs["date_from"]) == "2026-11-01"
+
+def test_analytics_alias_requires_organizer():
+    as_user(ROLE_ATTENDEE)
+    resp = client.get("/api/organizer/analytics")
     assert resp.status_code == 403
