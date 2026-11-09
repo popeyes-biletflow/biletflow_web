@@ -122,7 +122,8 @@
     "free": "Free",
     "dateTBA": "Date to be announced",
     "close": "Close",
-    "back": "Back"
+    "back": "Back",
+    "notMet": "Not met: {{items}}"
   },
   "eventStatus": {
     "draft": "Draft",
@@ -356,7 +357,18 @@
     "code": "Code",
     "redemptions": "Redemptions",
     "discount": "Discount",
-    "cancellations": "Cancelled: {{cancelled}}, refunded: {{refunded}}"
+    "cancellations": "Cancelled: {{cancelled}}, refunded: {{refunded}}",
+    "chart": {
+      "empty": "No sales in this period.",
+      "showChart": "Show chart",
+      "showTable": "Show as table",
+      "day": "Day",
+      "tickets": "Tickets",
+      "total": "Total",
+      "revenue": "Revenue",
+      "ticketsCount_one": "{{count}} ticket",
+      "ticketsCount_other": "{{count}} tickets"
+    }
   },
   "checkout": {
     "title": "Checkout",
@@ -451,5 +463,24 @@
     "footer": "Show the QR code at the entrance. The digital and printed copies are the same ticket and can be used once.",
     "notFound": "Ticket not found",
     "backToOrders": "← Back to my orders"
+  },
+  "auth": {
+    "loginTitle": "Log in to BiletFlow",
+    "signupTitle": "Sign up for BiletFlow",
+    "name": "Name",
+    "namePlaceholder": "John",
+    "password": "Password",
+    "confirmPassword": "Repeat password",
+    "fillAll": "Please fill in all fields",
+    "passwordsMismatch": "Passwords do not match",
+    "signupDone": "Account created. Confirm your email (if you received a message) and log in.",
+    "loginFailed": "Login failed",
+    "signupFailed": "Sign-up failed",
+    "login": "Log in",
+    "loggingIn": "Logging in...",
+    "signup": "Sign up",
+    "signingUp": "Signing up...",
+    "noAccount": "Don't have an account?",
+    "haveAccount": "Already have an account?"
   }
 }

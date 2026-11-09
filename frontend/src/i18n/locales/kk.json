@@ -122,7 +122,8 @@
     "free": "Тегін",
     "dateTBA": "Күні кейін хабарланады",
     "close": "Жабу",
-    "back": "Артқа"
+    "back": "Артқа",
+    "notMet": "Орындалмады: {{items}}"
   },
   "eventStatus": {
     "draft": "Жоба",
@@ -352,7 +353,17 @@
     "code": "Код",
     "redemptions": "Қолданылды",
     "discount": "Жеңілдік",
-    "cancellations": "Тоқтатылды: {{cancelled}}, қайтарылды: {{refunded}}"
+    "cancellations": "Тоқтатылды: {{cancelled}}, қайтарылды: {{refunded}}",
+    "chart": {
+      "empty": "Бұл кезеңде сатылым жоқ.",
+      "showChart": "Графикті көрсету",
+      "showTable": "Кесте түрінде көрсету",
+      "day": "Күн",
+      "tickets": "Билеттер",
+      "total": "Барлығы",
+      "revenue": "Түсім",
+      "ticketsCount_other": "{{count}} билет"
+    }
   },
   "checkout": {
     "title": "Рәсімдеу",
@@ -446,5 +457,24 @@
     "footer": "Кіреберісте QR-кодты көрсетіңіз. Электрондық және басылған көшірме — бір билет, оны бір рет қолдануға болады.",
     "notFound": "Билет табылмады",
     "backToOrders": "← Тапсырыстарыма"
+  },
+  "auth": {
+    "loginTitle": "BiletFlow жүйесіне кіру",
+    "signupTitle": "BiletFlow жүйесінде тіркелу",
+    "name": "Аты",
+    "namePlaceholder": "Асан",
+    "password": "Құпиясөз",
+    "confirmPassword": "Құпиясөзді қайталаңыз",
+    "fillAll": "Барлық өрістерді толтырыңыз",
+    "passwordsMismatch": "Құпиясөздер сәйкес келмейді",
+    "signupDone": "Аккаунт құрылды. Email-ді растаңыз (егер хат келсе) және кіріңіз.",
+    "loginFailed": "Кіру қатесі",
+    "signupFailed": "Тіркелу қатесі",
+    "login": "Кіру",
+    "loggingIn": "Кіру...",
+    "signup": "Тіркелу",
+    "signingUp": "Тіркелу...",
+    "noAccount": "Аккаунтыңыз жоқ па?",
+    "haveAccount": "Аккаунтыңыз бар ма?"
   }
 }

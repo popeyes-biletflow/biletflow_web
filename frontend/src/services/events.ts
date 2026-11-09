@@ -1,3 +1,4 @@
+import i18n, { currentLocale } from '../i18n';
 import { API_BASE_URL } from './config';
 
 export interface TicketTier {
@@ -87,7 +88,7 @@ function errorMessage(detail: unknown): string | null {
     const failed = Object.entries(d)
       .filter(([, v]) => v && typeof v === 'object' && (v as { passed?: boolean }).passed === false)
       .map(([k, v]) => `${k}${(v as { detail?: string }).detail ? `: ${(v as { detail?: string }).detail}` : ''}`);
-    if (failed.length) return `Не выполнено: ${failed.join('; ')}`;
+    if (failed.length) return i18n.t('common.notMet', { items: failed.join('; ') });
     return JSON.stringify(detail);
   }
   return String(detail);
@@ -126,4 +127,4 @@ export async function getEvent(id: string, token?: string | null): Promise<Event
 }
 
 export const formatKZT = (n: number) =>
-  `${new Intl.NumberFormat('ru-RU').format(Math.round(n))} ₸`;
+  `${new Intl.NumberFormat(currentLocale()).format(Math.round(n))} ₸`;

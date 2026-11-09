@@ -124,7 +124,8 @@
     "free": "Бесплатно",
     "dateTBA": "Дата уточняется",
     "close": "Закрыть",
-    "back": "Назад"
+    "back": "Назад",
+    "notMet": "Не выполнено: {{items}}"
   },
   "eventStatus": {
     "draft": "Черновик",
@@ -354,7 +355,20 @@
     "code": "Код",
     "redemptions": "Погашений",
     "discount": "Скидка",
-    "cancellations": "Отменено: {{cancelled}}, возвращено: {{refunded}}"
+    "cancellations": "Отменено: {{cancelled}}, возвращено: {{refunded}}",
+    "chart": {
+      "empty": "За этот период продаж нет.",
+      "showChart": "Показать график",
+      "showTable": "Показать таблицей",
+      "day": "День",
+      "tickets": "Билеты",
+      "total": "Всего",
+      "revenue": "Выручка",
+      "ticketsCount_one": "{{count}} билет",
+      "ticketsCount_few": "{{count}} билета",
+      "ticketsCount_many": "{{count}} билетов",
+      "ticketsCount_other": "{{count}} билета"
+    }
   },
   "checkout": {
     "title": "Оформление",
@@ -448,5 +462,24 @@
     "footer": "Предъявите QR-код при входе. Электронная и печатная копии — один и тот же билет: пройти по нему можно один раз.",
     "notFound": "Билет не найден",
     "backToOrders": "← К моим заказам"
+  },
+  "auth": {
+    "loginTitle": "Вход в BiletFlow",
+    "signupTitle": "Регистрация в BiletFlow",
+    "name": "Имя",
+    "namePlaceholder": "Иван",
+    "password": "Пароль",
+    "confirmPassword": "Повторите пароль",
+    "fillAll": "Заполните все поля",
+    "passwordsMismatch": "Пароли не совпадают",
+    "signupDone": "Аккаунт создан. Подтвердите email (если пришло письмо) и войдите.",
+    "loginFailed": "Ошибка входа",
+    "signupFailed": "Ошибка регистрации",
+    "login": "Войти",
+    "loggingIn": "Вход...",
+    "signup": "Зарегистрироваться",
+    "signingUp": "Регистрация...",
+    "noAccount": "Ещё нет аккаунта?",
+    "haveAccount": "Уже есть аккаунт?"
   }
 }
