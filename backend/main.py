@@ -186,7 +186,7 @@ def sold_count_for_type(db: Client, ticket_type_id: str) -> int:
     try:
         res = (
             db.table("tickets")
-            .select("id")
+            .select("id, status")
             .eq("ticket_type_id", ticket_type_id)
             .execute()
         )
@@ -195,14 +195,14 @@ def sold_count_for_type(db: Client, ticket_type_id: str) -> int:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e),
         )
-    return len(res.data or [])
+    return active_ticket_count(res.data or [])
 
 
 def sold_counts_for_event(db: Client, event_id: str) -> dict[str, int]:
     try:
         res = (
             db.table("tickets")
-            .select("ticket_type_id")
+            .select("ticket_type_id, status")
             .eq("event_id", event_id)
             .execute()
         )
@@ -213,6 +213,8 @@ def sold_counts_for_event(db: Client, event_id: str) -> dict[str, int]:
         )
     counts: dict[str, int] = {}
     for row in res.data or []:
+        if (row.get("status") or "").lower() in INACTIVE_TICKET_STATUSES:
+            continue
         key = str(row.get("ticket_type_id"))
         counts[key] = counts.get(key, 0) + 1
     return counts
@@ -243,13 +245,60 @@ def validate_ticket_type_payload(data: dict, existing: Optional[dict] = None, so
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="quantity cannot go below the number already sold.",
         )
+    max_per_order = merged.get("max_per_order")
+    if max_per_order is not None and max_per_order < 1:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="max_per_order must be at least 1.",
+        )
+    if "name" in data and not (data.get("name") or "").strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="name is required.",
+        )
     starts = merged.get("sale_starts_at")
     ends = merged.get("sale_ends_at")
-    if starts and ends and str(ends) <= str(starts):
+    if starts and ends and _parse_ts(ends) <= _parse_ts(starts):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="sale_ends_at must be later than sale_starts_at.",
         )
+
+
+VISIBILITIES = ("public", "unlisted", "private")
+INACTIVE_TICKET_STATUSES = ("cancelled", "refunded")
+
+
+def validate_event_payload(data: dict, existing: Optional[dict] = None) -> None:
+    merged = {**(existing or {}), **data}
+    visibility = merged.get("visibility")
+    if visibility is not None and visibility not in VISIBILITIES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="visibility must be one of: public, unlisted, private.",
+        )
+    capacity = merged.get("capacity")
+    if capacity is not None and capacity < 1:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="capacity must be at least 1 (leave empty for unlimited).",
+        )
+    starts, ends = merged.get("starts_at"), merged.get("ends_at")
+    if starts and ends and _parse_ts(ends) <= _parse_ts(starts):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="ends_at must be later than starts_at.",
+        )
+    opens, closes = merged.get("registration_opens_at"), merged.get("registration_closes_at")
+    if opens and closes and _parse_ts(closes) <= _parse_ts(opens):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="registration_closes_at must be later than registration_opens_at.",
+        )
+
+
+def active_ticket_count(rows: list[dict]) -> int:
+    return sum(1 for r in rows if (r.get("status") or "").lower() not in INACTIVE_TICKET_STATUSES)
 
 
 @app.get("/")
@@ -283,6 +332,7 @@ async def create_organizer_event(
     require_organizer(current_user)
     db = db_for_user(current_user.access_token)
     row = payload.model_dump(exclude_unset=True, mode="json")
+    validate_event_payload(row)
     row["organizer_id"] = current_user.id
     row["status"] = "draft"
     try:
@@ -344,6 +394,7 @@ async def update_organizer_event(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No fields provided for update.",
         )
+    validate_event_payload(update_data, existing=event)
     try:
         response = (
             db.table("events")
@@ -385,7 +436,7 @@ async def publish_organizer_event(
     try:
         types_res = (
             db.table("ticket_types")
-            .select("id")
+            .select("id, is_hidden")
             .eq("event_id", event_id)
             .execute()
         )
@@ -394,8 +445,8 @@ async def publish_organizer_event(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e),
         )
-    if not types_res.data:
-        missing.append("at least 1 ticket type")
+    if not any(not t.get("is_hidden") for t in types_res.data or []):
+        missing.append("at least 1 visible ticket type")
     if missing:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -766,6 +817,10 @@ def load_purchasable_ticket_type(db: Client, event_id: str, ticket_type_id: str)
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ticket type not found.")
 
     now = _dt.now(_tz.utc)
+    if event.get("registration_opens_at") and now < _parse_ts(event["registration_opens_at"]):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Registration for this event has not opened yet.")
+    if event.get("registration_closes_at") and now > _parse_ts(event["registration_closes_at"]):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Registration for this event is closed.")
     if ticket_type.get("sale_starts_at") and now < _parse_ts(ticket_type["sale_starts_at"]):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Ticket sales have not started yet.")
     if ticket_type.get("sale_ends_at") and now > _parse_ts(ticket_type["sale_ends_at"]):
@@ -778,6 +833,20 @@ def load_purchasable_ticket_type(db: Client, event_id: str, ticket_type_id: str)
                 status_code=status.HTTP_402_PAYMENT_REQUIRED,
                 detail="Paid ticket sales are not yet activated for this event. The organizer must activate paid sales first.",
             )
+
+    # Inventory: ticket_types.quantity and events.capacity are totals; sold = active tickets.
+    quantity = ticket_type.get("quantity")
+    capacity = event.get("capacity")
+    if quantity is not None or capacity is not None:
+        try:
+            rows = db.table("tickets").select("ticket_type_id, status").eq("event_id", event_id).execute().data or []
+        except Exception as e:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+        active = [r for r in rows if (r.get("status") or "").lower() not in INACTIVE_TICKET_STATUSES]
+        if capacity is not None and len(active) >= int(capacity):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This event is at full capacity.")
+        if quantity is not None and sum(1 for r in active if str(r.get("ticket_type_id")) == str(ticket_type["id"])) >= int(quantity):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This ticket type is sold out.")
     return event, ticket_type
 
 
@@ -821,10 +890,6 @@ async def register_for_event(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
     if any((t.get("status") or "").lower() not in ("cancelled", "refunded") for t in existing.data or []):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Already registered for this event.")
-
-    quantity = ticket_type.get("quantity")
-    if quantity is not None and quantity <= 0:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This ticket type is sold out.")
 
     promo = None
     if payload.promo_code and payload.promo_code.strip() and (ticket_type.get("price") or 0) > 0:
@@ -878,17 +943,6 @@ async def register_for_event(
     if not ticket_res.data:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to issue ticket.")
 
-    # Decrement inventory atomically via Postgres RPC
-    if quantity is not None:
-        try:
-            rpc_res = db.rpc("decrement_ticket_quantity", {"p_ticket_type_id": ticket_type_id}).execute()
-            if not rpc_res.data:
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This ticket type is sold out.")
-        except HTTPException:
-            raise
-        except Exception as e:
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
-
     row = ticket_res.data[0]
     return TicketIssueSchema(
         id=str(row["id"]),
@@ -908,7 +962,9 @@ async def register_for_event(
 def attendee_ticket_status(ticket: dict, event: dict, refund_case: Optional[dict]) -> str:
     """Map DB ticket status + event state + open refund request to the dashboard status."""
     raw = (ticket.get("status") or "").lower()
-    if raw in ("cancelled", "refunded") or event.get("status") == "cancelled":
+    if raw == "refunded":
+        return "REFUNDED"
+    if raw == "cancelled" or event.get("status") == "cancelled":
         return "CANCELLED"
     if raw in ("checked_in", "used"):
         return "USED"
@@ -1031,7 +1087,16 @@ async def get_event(
     if not (is_public or is_owner or is_platform_admin):
         raise HTTPException(status_code=404, detail="Event not found.")
     tiers = supabase.table("ticket_types").select("*").eq("event_id", event_id).execute()
-    event["ticket_types"] = tiers.data or []
+    sold_rows = supabase.table("tickets").select("ticket_type_id, status").eq("event_id", event_id).execute()
+    sold: dict[str, int] = {}
+    for r in sold_rows.data or []:
+        if (r.get("status") or "").lower() not in INACTIVE_TICKET_STATUSES:
+            sold[str(r.get("ticket_type_id"))] = sold.get(str(r.get("ticket_type_id")), 0) + 1
+    event["ticket_types"] = [
+        with_sold_available(t, sold.get(str(t["id"]), 0))
+        for t in (tiers.data or [])
+        if not t.get("is_hidden")
+    ]
     return event
 
 

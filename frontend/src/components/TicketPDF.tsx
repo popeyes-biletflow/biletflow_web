@@ -1,6 +1,7 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
 import { QRCodeSVG } from 'qrcode.react';
+import { useTranslation } from 'react-i18next';
 
 export interface TicketDetails {
   ticketId: string;
@@ -29,6 +30,7 @@ interface Props {
  * Rendered in a portal so `@media print` can hide the rest of the app (see index.css).
  */
 export const TicketPDF: React.FC<Props> = ({ ticket, onClose }) => {
+  const { t } = useTranslation();
   return createPortal(
     <div className="ticket-print-root fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/60 p-4 sm:items-center sm:p-6 print:static print:overflow-visible print:bg-white print:p-0">
       <div className="relative my-auto flex w-full max-w-2xl flex-col items-center print:w-full print:max-w-none">
@@ -38,13 +40,13 @@ export const TicketPDF: React.FC<Props> = ({ ticket, onClose }) => {
             disabled={!ticket.qrPayload}
             className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow transition hover:bg-emerald-700 disabled:opacity-50"
           >
-            Печать / Сохранить в PDF (A4)
+            {t('ticket.print')}
           </button>
           <button
             onClick={onClose}
             className="rounded-md bg-gray-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-gray-700"
           >
-            Закрыть
+            {t('common.close')}
           </button>
         </div>
 
@@ -53,7 +55,7 @@ export const TicketPDF: React.FC<Props> = ({ ticket, onClose }) => {
             <div className="mb-6 flex items-center justify-between border-b pb-6">
               <div>
                 <h1 className="text-2xl font-extrabold text-blue-600 sm:text-3xl print:text-black">BILETFLOW</h1>
-                <p className="text-xs text-gray-500 sm:text-sm">Электронный билет</p>
+                <p className="text-xs text-gray-500 sm:text-sm">{t('ticket.eTicket')}</p>
               </div>
               <span className="inline-block rounded bg-blue-100 px-3 py-1 text-xs font-bold text-blue-800 sm:text-sm print:border print:border-black print:bg-white print:text-black">
                 {ticket.ticketType}
@@ -65,21 +67,21 @@ export const TicketPDF: React.FC<Props> = ({ ticket, onClose }) => {
                 <h2 className="text-xl font-bold sm:text-2xl">{ticket.eventName}</h2>
                 <dl className="space-y-3 text-sm sm:text-base">
                   <div>
-                    <dt className="text-xs font-semibold uppercase text-gray-500">Дата и время</dt>
+                    <dt className="text-xs font-semibold uppercase text-gray-500">{t('ticket.dateTime')}</dt>
                     <dd className="font-medium">{ticket.eventDate}</dd>
                   </div>
                   <div>
-                    <dt className="text-xs font-semibold uppercase text-gray-500">Место</dt>
+                    <dt className="text-xs font-semibold uppercase text-gray-500">{t('ticket.venue')}</dt>
                     <dd className="font-medium">{ticket.venue}</dd>
                     {ticket.venueAddress && <dd className="text-gray-600">{ticket.venueAddress}</dd>}
                   </div>
                   <div>
-                    <dt className="text-xs font-semibold uppercase text-gray-500">Посетитель</dt>
+                    <dt className="text-xs font-semibold uppercase text-gray-500">{t('ticket.attendee')}</dt>
                     <dd className="font-medium">{ticket.attendeeName}</dd>
                   </div>
                   {ticket.seat && (
                     <div>
-                      <dt className="text-xs font-semibold uppercase text-gray-500">Место в зале</dt>
+                      <dt className="text-xs font-semibold uppercase text-gray-500">{t('ticket.seat')}</dt>
                       <dd className="font-medium">{ticket.seat}</dd>
                     </div>
                   )}
@@ -96,21 +98,21 @@ export const TicketPDF: React.FC<Props> = ({ ticket, onClose }) => {
                       marginSize={4}
                       bgColor="#FFFFFF"
                       fgColor="#000000"
-                      title={`QR-код билета ${ticket.ticketId}`}
+                      title={t('ticket.qrTitle', { id: ticket.ticketId })}
                     />
                   </div>
                 ) : (
                   <div className="flex h-52 w-52 items-center justify-center rounded border-2 border-gray-300 p-4 text-center text-sm text-gray-500">
-                    Билет недействителен — QR-код не выдаётся
+                    {t('ticket.invalid')}
                   </div>
                 )}
               </div>
             </div>
 
             <div className="mt-8 border-t pt-4 text-xs text-gray-500">
-              <p className="break-all font-mono">ID билета: {ticket.ticketId}</p>
+              <p className="break-all font-mono">{t('ticket.id')}: {ticket.ticketId}</p>
               <p className="mt-1">
-                Предъявите QR-код при входе. Электронная и печатная копии — один и тот же билет: пройти по нему можно один раз.
+                {t('ticket.footer')}
               </p>
             </div>
           </div>

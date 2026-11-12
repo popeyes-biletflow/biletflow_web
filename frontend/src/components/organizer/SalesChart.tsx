@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { currentLocale } from '../../i18n';
 import { formatKZT } from '../../services/events';
 
 export interface SalesPoint {
@@ -10,15 +12,16 @@ export interface SalesPoint {
 
 function formatDay(iso: string) {
   const d = new Date(iso + 'T00:00:00');
-  return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' });
+  return d.toLocaleDateString(currentLocale(), { day: 'numeric', month: 'short' });
 }
 
-// график продаж по дням: столбики + переключатель на таблицу
+// daily sales: bar chart with a table toggle
 export function SalesChart({ points }: { points: SalesPoint[] }) {
   const [asTable, setAsTable] = useState(false);
+  const { t } = useTranslation();
 
   if (points.length === 0) {
-    return <p className="py-10 text-center text-sm text-gray-500">За этот период продаж нет.</p>;
+    return <p className="py-10 text-center text-sm text-gray-500">{t('analytics.chart.empty')}</p>;
   }
 
   const max = Math.max(...points.map((p) => p.tickets));
@@ -26,17 +29,17 @@ export function SalesChart({ points }: { points: SalesPoint[] }) {
   return (
     <div>
       <button onClick={() => setAsTable(!asTable)} className="mb-3 text-xs font-semibold text-blue-600">
-        {asTable ? 'Показать график' : 'Показать таблицей'}
+        {asTable ? t('analytics.chart.showChart') : t('analytics.chart.showTable')}
       </button>
 
       {asTable ? (
         <table className="w-full text-sm">
           <thead className="text-left text-xs text-gray-500">
             <tr>
-              <th>День</th>
-              <th className="text-right">Билеты</th>
-              <th className="text-right">Всего</th>
-              <th className="text-right">Выручка</th>
+              <th>{t('analytics.chart.day')}</th>
+              <th className="text-right">{t('analytics.chart.tickets')}</th>
+              <th className="text-right">{t('analytics.chart.total')}</th>
+              <th className="text-right">{t('analytics.chart.revenue')}</th>
             </tr>
           </thead>
           <tbody>
@@ -58,7 +61,7 @@ export function SalesChart({ points }: { points: SalesPoint[] }) {
               <div
                 className="w-full max-w-6 rounded-t bg-blue-600"
                 style={{ height: `${(p.tickets / max) * 85}%` }}
-                title={`${formatDay(p.date)}: ${p.tickets} бил., ${formatKZT(p.revenue_kzt)}`}
+                title={`${formatDay(p.date)}: ${t('analytics.chart.ticketsCount', { count: p.tickets })}, ${formatKZT(p.revenue_kzt)}`}
               />
             </div>
           ))}

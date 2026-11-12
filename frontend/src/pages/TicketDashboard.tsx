@@ -1,24 +1,80 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { useAuth } from '../context/AuthContext';
-import { TicketPDF, type TicketDetails } from '../components/TicketPDF';
 import { formatKZT } from '../services/events';
-import { formatEventDateTime, ticketsApi, type MyTicket } from '../services/tickets';
+import { formatEventDateTime, ticketsApi, type MyTicket, type TicketStatus } from '../services/tickets';
+import { formatEventDate } from '../i18n';
+
+const BADGE: Record<TicketStatus, string> = {
+  ACTIVE: 'bg-emerald-100 text-emerald-800',
+  USED: 'bg-gray-200 text-gray-700',
+  CANCEL_PENDING: 'bg-amber-100 text-amber-800',
+  CANCELLED: 'bg-red-100 text-red-800',
+  REFUNDED: 'bg-purple-100 text-purple-800',
+};
+
+export function TicketStatusBadge({ status }: { status: TicketStatus }) {
+  const { t } = useTranslation();
+  return (
+    <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${BADGE[status] ?? BADGE.CANCELLED}`}>
+      {t(`orders.status.${status}`)}
+    </span>
+  );
+}
+
+type Filter = 'ALL' | 'ACTIVE' | 'USED' | 'CANCELLED' | 'REFUNDED';
+const FILTERS: Filter[] = ['ALL', 'ACTIVE', 'USED', 'CANCELLED', 'REFUNDED'];
+
+interface Order {
+  id: string;
+  eventTitle: string;
+  eventId: string;
+  purchasedAt: string | null;
+  timezone: string;
+  total: number;
+  discount: number;
+  fee: number;
+  subtotal: number;
+  promo: string | null;
+  tickets: MyTicket[];
+}
+
+function groupOrders(tickets: MyTicket[]): Order[] {
+  const map = new Map<string, Order>();
+  for (const tk of tickets) {
+    const key = tk.order_id || tk.id;
+    let o = map.get(key);
+    if (!o) {
+      o = {
+        id: key, eventTitle: tk.event_title, eventId: tk.event_id, purchasedAt: tk.purchased_at,
+        timezone: tk.timezone, total: 0, discount: 0, fee: 0, subtotal: 0, promo: tk.promo_code, tickets: [],
+      };
+      map.set(key, o);
+    }
+    o.total += tk.total_kzt;
+    o.discount += tk.discount_kzt;
+    o.fee += tk.fee_kzt;
+    o.subtotal += tk.subtotal_kzt;
+    o.tickets.push(tk);
+  }
+  return [...map.values()].sort((a, b) => (b.purchasedAt ?? '').localeCompare(a.purchasedAt ?? ''));
+}
 
 export function TicketDashboard() {
   const { user, token } = useAuth();
+  const { t } = useTranslation();
 
   const [tickets, setTickets] = useState<MyTicket[]>([]);
-  const [tab, setTab] = useState('ALL');
+  const [view, setView] = useState<'orders' | 'tickets'>('orders');
+  const [filter, setFilter] = useState<Filter>('ALL');
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
 
-  // модалки
-  const [pdfTicket, setPdfTicket] = useState<TicketDetails | null>(null);
-  const [orderTicket, setOrderTicket] = useState<MyTicket | null>(null);
   const [cancelTicket, setCancelTicket] = useState<MyTicket | null>(null);
   const [reason, setReason] = useState('');
   const [cancelError, setCancelError] = useState('');
+  const [sending, setSending] = useState(false);
   const [success, setSuccess] = useState('');
 
   function loadTickets() {
@@ -26,230 +82,205 @@ export function TicketDashboard() {
     setLoading(true);
     ticketsApi
       .mine(token)
-      .then((data) => {
-        setTickets(data);
-        setLoadError('');
-      })
-      .catch((e) => setLoadError(e.message))
+      .then((data) => { setTickets(data); setLoadError(''); })
+      .catch((e: Error) => setLoadError(e.message))
       .finally(() => setLoading(false));
   }
 
-  useEffect(() => {
-    loadTickets();
-  }, [token]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { loadTickets(); }, [token]);
 
-  const filtered = tickets.filter((t) => {
-    if (tab === 'ACTIVE') return t.status === 'ACTIVE';
-    if (tab === 'USED') return t.status === 'USED';
-    if (tab === 'CANCELLED') return t.status === 'CANCELLED' || t.status === 'CANCEL_PENDING';
-    return true;
+  const orders = useMemo(() => groupOrders(tickets), [tickets]);
+  const filtered = tickets.filter((tk) => {
+    if (filter === 'ALL') return true;
+    if (filter === 'CANCELLED') return tk.status === 'CANCELLED' || tk.status === 'CANCEL_PENDING';
+    return tk.status === filter;
   });
-
-  function badge(status: string) {
-    if (status === 'ACTIVE') return <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-800">Активен</span>;
-    if (status === 'USED') return <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-semibold text-gray-700">Использован</span>;
-    if (status === 'CANCEL_PENDING') return <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">Запрос на отмену</span>;
-    return <span className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-800">Отменён</span>;
-  }
-
-  function openPdf(t: MyTicket) {
-    setPdfTicket({
-      ticketId: t.id,
-      eventName: t.event_title,
-      eventDate: formatEventDateTime(t.starts_at, t.timezone),
-      venue: t.venue_name,
-      venueAddress: t.venue_address,
-      attendeeName: user?.name || user?.email || '',
-      ticketType: t.ticket_type,
-      qrPayload: t.qr_payload,
-    });
-  }
 
   async function sendCancel() {
     if (!cancelTicket || !token) return;
+    setSending(true);
+    setCancelError('');
     try {
       await ticketsApi.requestCancel(token, cancelTicket, reason);
-      setSuccess('Запрос на отмену отправлен организатору');
+      setSuccess(t('orders.cancelSent'));
       setTimeout(() => setSuccess(''), 4000);
       setCancelTicket(null);
       setReason('');
-      loadTickets(); // перезагружаем, статус придёт с сервера
+      loadTickets();
     } catch (e) {
       setCancelError((e as Error).message);
+    } finally {
+      setSending(false);
     }
   }
 
-  if (!user) {
-    return (
-      <div className="mx-auto max-w-4xl px-4 py-16 text-center">
-        <h2 className="text-2xl font-bold">Требуется авторизация</h2>
-        <p className="mt-2 text-gray-600">Войдите, чтобы увидеть свои билеты.</p>
-      </div>
-    );
-  }
+  if (!user) return null;
+
+  const ticketActions = (tk: MyTicket) => (
+    <div className="flex flex-wrap gap-2">
+      {tk.qr_payload ? (
+        <Link to={`/tickets/${tk.id}`} className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700">
+          {t('orders.openTicket')}
+        </Link>
+      ) : (
+        <span className="rounded-lg bg-gray-100 px-3 py-1.5 text-xs text-gray-500">{t('orders.noQr')}</span>
+      )}
+      {tk.status === 'ACTIVE' && (
+        <button
+          onClick={() => { setCancelError(''); setCancelTicket(tk); }}
+          className="rounded-lg border border-red-200 px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-50"
+        >
+          {t('orders.requestCancel')}
+        </button>
+      )}
+    </div>
+  );
 
   return (
     <div className="min-h-screen bg-gray-50 px-4 py-8">
       <div className="mx-auto max-w-5xl">
-        <h1 className="text-3xl font-extrabold">Мои билеты</h1>
+        <h1 className="text-3xl font-extrabold">{t('orders.title')}</h1>
         <p className="mt-1 text-sm text-gray-600">
-          {user.name || user.email} · всего билетов: {tickets.length}
+          {user.name || user.email} · {t('orders.summary', { orders: orders.length, count: tickets.length })}
         </p>
 
-        {success && <div className="mt-4 rounded-lg bg-emerald-50 p-3 text-sm text-emerald-800">{success}</div>}
+        {success && <div role="status" className="mt-4 rounded-lg bg-emerald-50 p-3 text-sm text-emerald-800">{success}</div>}
 
-        <div className="mb-6 mt-6 flex gap-6 border-b border-gray-200">
-          {[
-            ['ALL', 'Все'],
-            ['ACTIVE', 'Активные'],
-            ['USED', 'Использованные'],
-            ['CANCELLED', 'Отменённые'],
-          ].map(([key, label]) => (
-            <button
-              key={key}
-              onClick={() => setTab(key)}
-              className={`pb-3 text-sm font-semibold border-b-2 ${tab === key ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500'}`}
-            >
-              {label}
+        <div className="mt-6 inline-flex rounded-lg border border-gray-200 bg-white p-1">
+          {(['orders', 'tickets'] as const).map((v) => (
+            <button key={v} onClick={() => setView(v)}
+              className={`rounded-md px-4 py-1.5 text-sm font-semibold ${view === v ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-100'}`}>
+              {t(`orders.view.${v}`)}
             </button>
           ))}
         </div>
 
-        {loading && <p className="py-12 text-center text-gray-500">Загрузка...</p>}
-
-        {!loading && loadError && (
-          <div className="rounded-xl bg-red-50 p-6 text-center text-sm text-red-700">
-            Не удалось загрузить билеты: {loadError}
-            <button onClick={loadTickets} className="ml-3 underline">Повторить</button>
+        {view === 'tickets' && (
+          <div className="mb-2 mt-4 flex flex-wrap gap-4 border-b border-gray-200">
+            {FILTERS.map((key) => (
+              <button key={key} onClick={() => setFilter(key)}
+                className={`border-b-2 pb-3 text-sm font-semibold ${filter === key ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500'}`}>
+                {t(`orders.filter.${key}`)}
+              </button>
+            ))}
           </div>
         )}
 
-        {!loading && !loadError && filtered.length === 0 && (
-          <div className="rounded-xl border border-dashed border-gray-300 bg-white p-12 text-center text-gray-500">
-            {tickets.length === 0 ? 'У вас пока нет билетов.' : 'В этой категории ничего нет.'}
-            {tickets.length === 0 && (
-              <div><Link to="/events" className="text-blue-600">Перейти в афишу</Link></div>
-            )}
-          </div>
-        )}
+        <div className="mt-4">
+          {loading && <p className="py-12 text-center text-gray-500">{t('common.loading')}</p>}
 
-        <div className="space-y-4">
-          {filtered.map((t) => (
-            <div key={t.id} className="flex flex-col gap-4 rounded-xl border border-gray-200 bg-white p-6 shadow-sm sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <div className="flex items-center gap-3">
-                  {badge(t.status)}
-                  <span className="font-mono text-xs text-gray-400">#{t.id.slice(0, 8)}</span>
-                </div>
-                <h3 className="mt-2 text-xl font-bold">
-                  <Link to={`/events/${t.event_id}`}>{t.event_title}</Link>
-                </h3>
-                <p className="mt-1 text-sm text-gray-600">
-                  {formatEventDateTime(t.starts_at, t.timezone)} · {t.venue_name} · {t.ticket_type}
-                </p>
-              </div>
-
-              <div className="flex flex-col gap-2 sm:items-end">
-                <div className="text-lg font-black">{t.total_kzt > 0 ? formatKZT(t.total_kzt) : 'Бесплатно'}</div>
-                {t.discount_kzt > 0 && <div className="text-xs text-emerald-700">Скидка: −{formatKZT(t.discount_kzt)}</div>}
-                <div className="flex flex-wrap gap-2">
-                  <button onClick={() => setOrderTicket(t)} className="rounded-lg bg-gray-100 px-3 py-1.5 text-xs font-semibold hover:bg-gray-200">
-                    Детали заказа
-                  </button>
-                  {t.qr_payload && (
-                    <button onClick={() => openPdf(t)} className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700">
-                      Билет / PDF
-                    </button>
-                  )}
-                  {t.status === 'ACTIVE' && (
-                    <button
-                      onClick={() => { setCancelError(''); setCancelTicket(t); }}
-                      className="rounded-lg border border-red-200 px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-50"
-                    >
-                      Отменить
-                    </button>
-                  )}
-                </div>
-              </div>
+          {!loading && loadError && (
+            <div role="alert" className="rounded-xl bg-red-50 p-6 text-center text-sm text-red-700">
+              {t('orders.loadError', { reason: loadError })}
+              <button onClick={loadTickets} className="ml-3 underline">{t('common.retry')}</button>
             </div>
-          ))}
+          )}
+
+          {!loading && !loadError && tickets.length === 0 && (
+            <div className="rounded-xl border border-dashed border-gray-300 bg-white p-12 text-center text-gray-500">
+              {t('orders.empty')}
+              <div><Link to="/events" className="text-blue-600">{t('orders.toEvents')}</Link></div>
+            </div>
+          )}
+
+          {!loading && !loadError && view === 'orders' && (
+            <div className="space-y-4">
+              {orders.map((o) => (
+                <article key={o.id} className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="font-mono text-xs text-gray-400">{t('orders.order')} #{o.id.slice(0, 8)}
+                        {o.purchasedAt && <> · {formatEventDate(o.purchasedAt, o.timezone, 'card')}</>}
+                      </p>
+                      <h3 className="mt-1 text-xl font-bold"><Link to={`/events/${o.eventId}`}>{o.eventTitle}</Link></h3>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-lg font-black">{formatKZT(o.total)}</div>
+                      {o.total === 0 ? (
+                        <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-800">{t('orders.freeConfirmed')}</span>
+                      ) : (
+                        <span className="text-xs text-gray-500">{t('orders.paidSimulated')}</span>
+                      )}
+                    </div>
+                  </div>
+
+                  <dl className="mt-3 space-y-1 border-t pt-3 text-sm">
+                    <div className="flex justify-between text-gray-600"><dt>{t('checkout.subtotal')}</dt><dd>{formatKZT(o.subtotal)}</dd></div>
+                    {o.discount > 0 && (
+                      <div className="flex justify-between text-emerald-700"><dt>{t('orders.promo', { code: o.promo ?? '' })}</dt><dd>−{formatKZT(o.discount)}</dd></div>
+                    )}
+                    {o.fee > 0 && <div className="flex justify-between text-gray-600"><dt>{t('checkout.fee')}</dt><dd>{formatKZT(o.fee)}</dd></div>}
+                  </dl>
+
+                  <ul className="mt-3 divide-y divide-gray-100">
+                    {o.tickets.map((tk) => (
+                      <li key={tk.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
+                        <div className="text-sm">
+                          <div className="flex items-center gap-2">
+                            <TicketStatusBadge status={tk.status} />
+                            <span className="font-medium">{tk.ticket_type}</span>
+                          </div>
+                          <p className="mt-1 text-gray-600">{formatEventDateTime(tk.starts_at, tk.timezone)} · {tk.venue_name}</p>
+                        </div>
+                        {ticketActions(tk)}
+                      </li>
+                    ))}
+                  </ul>
+                </article>
+              ))}
+            </div>
+          )}
+
+          {!loading && !loadError && view === 'tickets' && tickets.length > 0 && (
+            <div className="space-y-4">
+              {filtered.length === 0 && (
+                <div className="rounded-xl border border-dashed border-gray-300 bg-white p-12 text-center text-gray-500">{t('orders.emptyFilter')}</div>
+              )}
+              {filtered.map((tk) => (
+                <div key={tk.id} className="flex flex-col gap-4 rounded-xl border border-gray-200 bg-white p-6 shadow-sm sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <div className="flex items-center gap-3">
+                      <TicketStatusBadge status={tk.status} />
+                      <span className="font-mono text-xs text-gray-400">#{tk.id.slice(0, 8)}</span>
+                    </div>
+                    <h3 className="mt-2 text-xl font-bold"><Link to={`/events/${tk.event_id}`}>{tk.event_title}</Link></h3>
+                    <p className="mt-1 text-sm text-gray-600">
+                      {formatEventDateTime(tk.starts_at, tk.timezone)} · {tk.venue_name} · {tk.ticket_type}
+                    </p>
+                    {tk.checked_in_at && (
+                      <p className="mt-1 text-xs text-gray-500">{t('orders.checkedInAt', { date: formatEventDate(tk.checked_in_at, tk.timezone, 'card') })}</p>
+                    )}
+                  </div>
+                  <div className="flex flex-col gap-2 sm:items-end">
+                    <div className="text-lg font-black">{tk.total_kzt > 0 ? formatKZT(tk.total_kzt) : t('common.free')}</div>
+                    {ticketActions(tk)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
-      {pdfTicket && <TicketPDF ticket={pdfTicket} onClose={() => setPdfTicket(null)} />}
-
-      {/* детали заказа */}
-      {orderTicket && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="w-full max-w-lg rounded-xl bg-white p-6 shadow-xl">
-            <div className="flex justify-between border-b pb-3">
-              <h3 className="text-lg font-bold">Заказ #{(orderTicket.order_id || orderTicket.id).slice(0, 8)}</h3>
-              <button onClick={() => setOrderTicket(null)}>✕</button>
-            </div>
-
-            <div className="mt-4 space-y-2 text-sm">
-              <p><span className="text-gray-500">Мероприятие:</span> {orderTicket.event_title}</p>
-              <p><span className="text-gray-500">Дата:</span> {formatEventDateTime(orderTicket.starts_at, orderTicket.timezone)}</p>
-              <p><span className="text-gray-500">Место:</span> {orderTicket.venue_name} {orderTicket.venue_address}</p>
-              <p><span className="text-gray-500">Тип билета:</span> {orderTicket.ticket_type}</p>
-              <p className="break-all"><span className="text-gray-500">ID билета:</span> {orderTicket.id}</p>
-              <p><span className="text-gray-500">Статус:</span> {badge(orderTicket.status)}</p>
-
-              <hr className="my-3" />
-
-              <p className="flex justify-between"><span>Стоимость билета</span><span>{formatKZT(orderTicket.subtotal_kzt)}</span></p>
-              {orderTicket.discount_kzt > 0 && (
-                <p className="flex justify-between text-emerald-700">
-                  <span>Промокод {orderTicket.promo_code}</span>
-                  <span>−{formatKZT(orderTicket.discount_kzt)}</span>
-                </p>
-              )}
-              {orderTicket.fee_kzt > 0 && (
-                <p className="flex justify-between"><span>Сервисный сбор</span><span>{formatKZT(orderTicket.fee_kzt)}</span></p>
-              )}
-              <p className="flex justify-between border-t pt-2 text-base font-bold">
-                <span>Итого</span><span>{formatKZT(orderTicket.total_kzt)}</span>
-              </p>
-              {orderTicket.total_kzt > 0 && <p className="text-xs text-gray-500">Оплата демонстрационная, деньги не списывались.</p>}
-            </div>
-
-            <div className="mt-6 flex justify-end gap-3">
-              {orderTicket.qr_payload && (
-                <button
-                  onClick={() => { openPdf(orderTicket); setOrderTicket(null); }}
-                  className="rounded-lg bg-blue-600 px-4 py-2 text-xs font-semibold text-white"
-                >
-                  Открыть билет
-                </button>
-              )}
-              <button onClick={() => setOrderTicket(null)} className="rounded-lg bg-gray-200 px-4 py-2 text-xs font-semibold">
-                Закрыть
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* отмена */}
       {cancelTicket && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true">
           <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
-            <h3 className="text-lg font-bold">Отмена билета #{cancelTicket.id.slice(0, 8)}</h3>
-            <p className="mt-2 text-xs text-gray-600">
-              Запрос уйдёт организатору «{cancelTicket.event_title}» как обращение в поддержку.
-              Пока он не подтвердит, билет остаётся действительным.
-            </p>
+            <h3 className="text-lg font-bold">{t('orders.cancelTitle', { id: cancelTicket.id.slice(0, 8) })}</h3>
+            <p className="mt-2 text-xs text-gray-600">{t('orders.cancelHint', { event: cancelTicket.event_title })}</p>
             <textarea
               value={reason}
               onChange={(e) => setReason(e.target.value)}
               rows={3}
-              placeholder="Причина отмены"
+              placeholder={t('orders.cancelReason')}
               className="mt-4 w-full rounded-lg border border-gray-300 p-2 text-xs"
             />
-            {cancelError && <p className="mt-2 text-xs text-red-600">{cancelError}</p>}
+            {cancelError && <p role="alert" className="mt-2 text-xs text-red-600">{cancelError}</p>}
             <div className="mt-6 flex justify-end gap-3">
-              <button onClick={() => setCancelTicket(null)} className="rounded-lg bg-gray-200 px-4 py-2 text-xs font-semibold">Назад</button>
-              <button onClick={sendCancel} className="rounded-lg bg-red-600 px-4 py-2 text-xs font-semibold text-white">Отправить запрос</button>
+              <button onClick={() => setCancelTicket(null)} className="rounded-lg bg-gray-200 px-4 py-2 text-xs font-semibold">{t('common.back')}</button>
+              <button onClick={sendCancel} disabled={sending} className="rounded-lg bg-red-600 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50">
+                {sending ? t('common.saving') : t('orders.sendCancel')}
+              </button>
             </div>
           </div>
         </div>

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { rememberPendingName } from '../services/session';
 import { ApiError, signup as apiSignup } from '../services/api';
 
@@ -15,17 +16,18 @@ export function SignupForm({ onSwitchToLogin, onSuccess }: Props) {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [loading, setLoading] = useState(false);
+  const { t } = useTranslation();
 
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
 
     if (!name || !email || !password || !confirmPassword) {
-      setError('Заполните все поля');
+      setError(t('auth.fillAll'));
       return;
     }
 
     if (password !== confirmPassword) {
-      setError('Пароли не совпадают');
+      setError(t('auth.passwordsMismatch'));
       return;
     }
 
@@ -36,10 +38,10 @@ export function SignupForm({ onSwitchToLogin, onSuccess }: Props) {
       await apiSignup({ email, password });
       // The backend only takes email + password; the name is saved to the profile on first login.
       rememberPendingName(name);
-      setNotice('Аккаунт создан. Подтвердите email (если пришло письмо) и войдите.');
+      setNotice(t('auth.signupDone'));
       if (onSuccess) setTimeout(onSuccess, 1500);
     } catch (err) {
-      setError(err instanceof ApiError || err instanceof Error ? err.message : 'Ошибка регистрации');
+      setError(err instanceof ApiError || err instanceof Error ? err.message : t('auth.signupFailed'));
     } finally {
       setLoading(false);
     }
@@ -49,7 +51,7 @@ export function SignupForm({ onSwitchToLogin, onSuccess }: Props) {
     <div className="flex min-h-screen items-center justify-center bg-gray-100 p-4">
       <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-md">
         <h2 className="mb-6 text-center text-2xl font-bold text-gray-800">
-          Регистрация в BiletFlow
+          {t('auth.signupTitle')}
         </h2>
 
         {error && (
@@ -66,12 +68,12 @@ export function SignupForm({ onSwitchToLogin, onSuccess }: Props) {
 
         <form onSubmit={handleRegister} className="space-y-4">
           <div>
-            <label className="mb-1 block text-sm font-medium text-gray-700">Имя</label>
+            <label className="mb-1 block text-sm font-medium text-gray-700">{t('auth.name')}</label>
             <input
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="Иван"
+              placeholder={t('auth.namePlaceholder')}
               className="w-full rounded-md border border-gray-300 p-2 text-sm focus:border-blue-500 focus:outline-none"
             />
           </div>
@@ -88,7 +90,7 @@ export function SignupForm({ onSwitchToLogin, onSuccess }: Props) {
           </div>
 
           <div>
-            <label className="mb-1 block text-sm font-medium text-gray-700">Пароль</label>
+            <label className="mb-1 block text-sm font-medium text-gray-700">{t('auth.password')}</label>
             <input
               type="password"
               value={password}
@@ -99,7 +101,7 @@ export function SignupForm({ onSwitchToLogin, onSuccess }: Props) {
           </div>
 
           <div>
-            <label className="mb-1 block text-sm font-medium text-gray-700">Повторите пароль</label>
+            <label className="mb-1 block text-sm font-medium text-gray-700">{t('auth.confirmPassword')}</label>
             <input
               type="password"
               value={confirmPassword}
@@ -114,14 +116,14 @@ export function SignupForm({ onSwitchToLogin, onSuccess }: Props) {
             disabled={loading}
             className="w-full rounded-md bg-blue-600 py-2 font-medium text-white transition hover:bg-blue-700 disabled:opacity-50"
           >
-            {loading ? 'Регистрация...' : 'Зарегистрироваться'}
+            {loading ? t('auth.signingUp') : t('auth.signup')}
           </button>
         </form>
 
         <div className="mt-4 text-center text-sm text-gray-600">
-          <span>Уже есть аккаунт? </span>
+          <span>{t('auth.haveAccount')} </span>
           <button onClick={onSwitchToLogin} className="font-semibold text-blue-600 hover:underline">
-            Войти
+            {t('auth.login')}
           </button>
         </div>
       </div>

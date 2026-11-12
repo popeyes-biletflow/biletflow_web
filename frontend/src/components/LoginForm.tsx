@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useAuth } from '../context/AuthContext';
 import { ApiError, login as apiLogin } from '../services/api';
 
@@ -13,12 +14,13 @@ export function LoginForm({ onSwitchToSignup, onSuccess }: Props) {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const { login } = useAuth();
+  const { t } = useTranslation();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
     if (!email || !password) {
-      setError('Заполните все поля');
+      setError(t('auth.fillAll'));
       return;
     }
 
@@ -30,7 +32,7 @@ export function LoginForm({ onSwitchToSignup, onSuccess }: Props) {
       login(data.email, data.access_token, { id: data.user_id });
       if (onSuccess) onSuccess();
     } catch (err) {
-      setError(err instanceof ApiError || err instanceof Error ? err.message : 'Ошибка входа');
+      setError(err instanceof ApiError || err instanceof Error ? err.message : t('auth.loginFailed'));
     } finally {
       setLoading(false);
     }
@@ -40,7 +42,7 @@ export function LoginForm({ onSwitchToSignup, onSuccess }: Props) {
     <div className="flex min-h-screen items-center justify-center bg-gray-100 p-4">
       <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-md">
         <h2 className="mb-6 text-center text-2xl font-bold text-gray-800">
-          Вход в BiletFlow
+          {t('auth.loginTitle')}
         </h2>
 
         {error && (
@@ -62,7 +64,7 @@ export function LoginForm({ onSwitchToSignup, onSuccess }: Props) {
           </div>
 
           <div>
-            <label className="mb-1 block text-sm font-medium text-gray-700">Пароль</label>
+            <label className="mb-1 block text-sm font-medium text-gray-700">{t('auth.password')}</label>
             <input
               type="password"
               value={password}
@@ -77,14 +79,14 @@ export function LoginForm({ onSwitchToSignup, onSuccess }: Props) {
             disabled={loading}
             className="w-full rounded-md bg-blue-600 py-2 font-medium text-white transition hover:bg-blue-700 disabled:opacity-50"
           >
-            {loading ? 'Вход...' : 'Войти'}
+            {loading ? t('auth.loggingIn') : t('auth.login')}
           </button>
         </form>
 
         <div className="mt-4 text-center text-sm text-gray-600">
-          <span>Ещё нет аккаунта? </span>
+          <span>{t('auth.noAccount')} </span>
           <button onClick={onSwitchToSignup} className="font-semibold text-blue-600 hover:underline">
-            Зарегистрироваться
+            {t('auth.signup')}
           </button>
         </div>
       </div>

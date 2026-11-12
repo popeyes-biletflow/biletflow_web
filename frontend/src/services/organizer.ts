@@ -13,11 +13,15 @@ export interface OrganizerEvent {
   venue_name: string | null;
   venue_address: string | null;
   image_url: string | null;
-  visibility: 'public' | 'unlisted' | 'private' | null;
+  visibility: Visibility | null;
+  registration_opens_at: string | null;
+  registration_closes_at: string | null;
   capacity: number | null;
   status: 'draft' | 'published' | 'cancelled';
   paid_sales_status?: 'NONE' | 'ACTIVE' | 'SUSPENDED';
 }
+
+export type Visibility = 'public' | 'unlisted' | 'private';
 
 export interface OrganizerTicketType {
   id: string;
@@ -74,6 +78,31 @@ export interface DashboardResponse {
 }
 
 export type EventInput = Partial<Omit<OrganizerEvent, 'id' | 'status' | 'paid_sales_status'>>;
+
+export const CHECKLIST_KEYS = [
+  'at_least_one_paid_ticket_type',
+  'valid_payout_account',
+  'identity_verified',
+  'activation_fee_paid',
+  'paid_event_terms_accepted',
+] as const;
+export type ChecklistKey = (typeof CHECKLIST_KEYS)[number];
+export type Checklist = Partial<Record<ChecklistKey, { passed: boolean; detail?: string; amount_kzt?: number }>>;
+
+export interface ActivationResult {
+  status: 'activated' | 'already_active';
+  paid_sales_status: 'ACTIVE';
+  activation_fee_kzt?: number;
+  checklist?: Checklist;
+}
+
+export interface Profile {
+  id: string;
+  email: string;
+  full_name: string | null;
+  payout_info: string | null;
+  role: string | null;
+}
 export type TicketTypeInput = Partial<Omit<OrganizerTicketType, 'id' | 'event_id' | 'sold' | 'available'>>;
 
 const json = (body: unknown) => ({ body: JSON.stringify(body) });
@@ -102,25 +131,16 @@ export const organizerApi = {
   updateTicketType: (token: string, id: string, body: TicketTypeInput) =>
     http<OrganizerTicketType>(`/api/organizer/ticket-types/${id}`, { method: 'PATCH', ...json(body) }, token),
 
-  activatePaidSales: (token: string, eventId: string) =>
-    http<{ status: string; paid_sales_status: string; checklist?: Record<string, { passed: boolean; detail?: string }> }>(
+  activatePaidSales: (token: string, eventId: string, termsAccepted: boolean) =>
+    http<ActivationResult>(
       `/api/organizer/events/${eventId}/activate-paid-sales`,
-      { method: 'POST', ...json({ paid_event_terms_accepted: true }) },
+      { method: 'POST', ...json({ paid_event_terms_accepted: termsAccepted }) },
       token,
     ),
-};
 
-export const PHASE_LABEL: Record<Phase, string> = {
-  upcoming: 'Предстоящее',
-  active: 'Идёт сейчас',
-  completed: 'Завершено',
-  cancelled: 'Отменено',
-};
-
-export const STATUS_LABEL: Record<OrganizerEvent['status'], string> = {
-  draft: 'Черновик',
-  published: 'Опубликовано',
-  cancelled: 'Отменено',
+  profile: (token: string) => http<Profile>('/api/users/me', {}, token),
+  savePayout: (token: string, payoutInfo: string) =>
+    http<Profile>('/api/users/me', { method: 'PUT', ...json({ payout_info: payoutInfo }) }, token),
 };
 
 /** `<input type="datetime-local">` ↔ ISO, in the event's wall time (Asia/Almaty, UTC+5 by default). */

@@ -1,14 +1,15 @@
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { useAuth } from '../context/AuthContext';
 import { formatKZT } from '../services/events';
 import { formatEventDateTime } from '../services/tickets';
 import {
-  organizerApi, PHASE_LABEL, STATUS_LABEL,
+  organizerApi,
   type DashboardResponse, type EventAnalytics, type OrganizerEvent, type Phase,
 } from '../services/organizer';
 import { SalesChart } from '../components/organizer/SalesChart';
-import { EventEditor } from '../components/organizer/EventEditor';
+import { Notice, type NoticeState } from '../components/Notice';
 
 function percent(v: number | null) {
   return v === null ? '—' : v + '%';
@@ -42,13 +43,15 @@ const phaseColors: Record<Phase, string> = {
 
 export function OrganizerDashboard() {
   const { token, user } = useAuth();
+  const { t: tr } = useTranslation();
+  const navigate = useNavigate();
 
   const [dash, setDash] = useState<DashboardResponse | null>(null);
   const [events, setEvents] = useState<OrganizerEvent[]>([]);
   const [phase, setPhase] = useState<Phase | 'all'>('all');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [editing, setEditing] = useState<OrganizerEvent | 'new' | null>(null);
+  const [notice, setNotice] = useState<NoticeState>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
   async function reload() {
@@ -69,24 +72,26 @@ export function OrganizerDashboard() {
     reload();
   }, [token]);
 
-  if (!token) return <main className="p-6">Войдите как организатор.</main>;
+  if (!token) return <main className="p-6">{tr('organizer.signIn')}</main>;
 
   if (user?.role && user.role !== 'organizer') {
     return (
       <main className="mx-auto max-w-3xl p-6">
-        <h2 className="text-2xl font-bold">Панель организатора</h2>
-        <p className="mt-2 text-gray-600">Раздел только для организаторов. Ваша роль: {user.role}.</p>
+        <h2 className="text-2xl font-bold">{tr('organizer.title')}</h2>
+        <p className="mt-2 text-gray-600">{tr('organizer.onlyOrganizers', { role: user.role })}</p>
       </main>
     );
   }
 
   // выполнить действие над событием и обновить список
-  async function doAction(fn: () => Promise<unknown>) {
+  async function doAction(action: 'publish' | 'unpublish' | 'cancel', id: string) {
+    setNotice(null);
     try {
-      await fn();
+      await organizerApi[action](token!, id);
+      setNotice({ kind: 'success', text: tr(`manage.done.${action}`) });
       await reload();
     } catch (err) {
-      setError((err as Error).message);
+      setNotice({ kind: 'error', text: tr(`manage.failed.${action}`, { reason: (err as Error).message }) });
     }
   }
 
@@ -98,40 +103,32 @@ export function OrganizerDashboard() {
     <main className="mx-auto max-w-6xl space-y-8 px-4 py-8">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-3xl font-extrabold">Панель организатора</h1>
-          <p className="text-sm text-gray-500">Выручка демонстрационная, в тенге.</p>
+          <h1 className="text-3xl font-extrabold">{tr('organizer.title')}</h1>
+          <p className="text-sm text-gray-500">{tr('organizer.subtitle')}</p>
         </div>
-        <button onClick={() => setEditing('new')} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white">
-          + Новое событие
+        <button onClick={() => navigate('/organizer/events/new')} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white">
+          + {tr('organizer.newEvent')}
         </button>
       </div>
 
-      {error && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}
+      {error && <Notice notice={{ kind: 'error', text: tr('organizer.loadFailed', { reason: error }) }} />}
+      <Notice notice={notice} onClose={() => setNotice(null)} />
 
-      {editing && (
-        <EventEditor
-          token={token}
-          event={editing === 'new' ? null : editing}
-          onSaved={(e) => { setEditing(e); reload(); }}
-          onClose={() => setEditing(null)}
-        />
-      )}
-
-      {loading && <p className="py-12 text-center text-gray-500">Загрузка...</p>}
+      {loading && <p className="py-12 text-center text-gray-500">{tr('common.loading')}</p>}
 
       {t && (
         <>
           <div className="grid grid-cols-2 gap-4 lg:grid-cols-3 xl:grid-cols-6">
-            <StatCard label="События" value={t.events} sub={`${t.by_phase.upcoming} предстоящих, ${t.by_phase.active} идут`} />
+            <StatCard label={tr('organizer.stats.events')} value={t.events} sub={tr('organizer.stats.eventsSub', { upcoming: t.by_phase.upcoming, active: t.by_phase.active })} />
             <StatCard
-              label="Продано билетов"
+              label={tr('organizer.stats.sold')}
               value={t.tickets_sold}
-              sub={t.capacity ? `из ${t.capacity} мест` : 'без лимита'}
+              sub={t.capacity ? tr('organizer.stats.ofSeats', { count: t.capacity }) : tr('organizer.stats.unlimited')}
             />
-            <StatCard label="Валовые продажи" value={formatKZT(t.gross_kzt)} sub={`скидки −${formatKZT(t.discounts_kzt)}`} />
-            <StatCard label="Чистая выручка" value={formatKZT(t.net_kzt)} sub={`возвраты −${formatKZT(t.refunds_kzt)}`} />
-            <StatCard label="Check-in" value={percent(t.percent_checked_in)} sub={`${t.checked_in} пришли`} />
-            <StatCard label="Промокоды" value={t.promo_redemptions} sub="погашений" />
+            <StatCard label={tr('organizer.stats.gross')} value={formatKZT(t.gross_kzt)} sub={tr('organizer.stats.discounts', { amount: formatKZT(t.discounts_kzt) })} />
+            <StatCard label={tr('organizer.stats.net')} value={formatKZT(t.net_kzt)} sub={tr('organizer.stats.refunds', { amount: formatKZT(t.refunds_kzt) })} />
+            <StatCard label={tr('organizer.stats.checkIn')} value={percent(t.percent_checked_in)} sub={tr('organizer.stats.came', { count: t.checked_in })} />
+            <StatCard label={tr('organizer.stats.promo')} value={t.promo_redemptions} sub={tr('organizer.stats.redemptions')} />
           </div>
 
           <section className="rounded-xl border border-gray-100 bg-white shadow-sm">
@@ -142,7 +139,7 @@ export function OrganizerDashboard() {
                   onClick={() => setPhase(p)}
                   className={`whitespace-nowrap border-b-2 pb-2 text-sm font-semibold ${phase === p ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500'}`}
                 >
-                  {p === 'all' ? `Все (${t.events})` : `${PHASE_LABEL[p]} (${t.by_phase[p]})`}
+                  {p === 'all' ? `${tr('filters.all')} (${t.events})` : `${tr(`phase.${p}`)} (${t.by_phase[p]})`}
                 </button>
               ))}
             </div>
@@ -151,12 +148,12 @@ export function OrganizerDashboard() {
               <table className="w-full min-w-[760px] text-left text-sm">
                 <thead className="text-xs text-gray-500">
                   <tr>
-                    <th className="p-3">Событие</th>
-                    <th className="p-3">Статус</th>
-                    <th className="w-48 p-3">Продажи</th>
-                    <th className="p-3 text-right">Выручка</th>
-                    <th className="p-3 text-right">Check-in</th>
-                    <th className="p-3 text-right">Действия</th>
+                    <th className="p-3">{tr('organizer.table.event')}</th>
+                    <th className="p-3">{tr('organizer.table.status')}</th>
+                    <th className="w-48 p-3">{tr('organizer.table.sales')}</th>
+                    <th className="p-3 text-right">{tr('organizer.table.revenue')}</th>
+                    <th className="p-3 text-right">{tr('organizer.stats.checkIn')}</th>
+                    <th className="p-3 text-right">{tr('organizer.table.actions')}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -168,15 +165,15 @@ export function OrganizerDashboard() {
                       <tr key={id} className="border-t">
                         <td className="p-3">
                           <button onClick={() => setSelectedId(id)} className="text-left font-medium hover:text-blue-600">
-                            {a.event.title || 'Без названия'}
+                            {a.event.title || tr('organizer.untitled')}
                           </button>
                           <p className="text-xs text-gray-500">{formatEventDateTime(a.event.starts_at, a.event.timezone)}</p>
                         </td>
                         <td className="p-3">
                           <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${phaseColors[a.event.phase]}`}>
-                            {PHASE_LABEL[a.event.phase]}
+                            {tr(`phase.${a.event.phase}`)}
                           </span>
-                          <p className="mt-1 text-xs text-gray-500">{STATUS_LABEL[status]}</p>
+                          <p className="mt-1 text-xs text-gray-500">{tr(`eventStatus.${status}`)}</p>
                         </td>
                         <td className="p-3">
                           <p className="mb-1 text-xs">
@@ -187,29 +184,25 @@ export function OrganizerDashboard() {
                         <td className="p-3 text-right">{formatKZT(a.revenue.net_kzt)}</td>
                         <td className="p-3 text-right">{percent(a.attendance.percent_checked_in)}</td>
                         <td className="space-x-3 whitespace-nowrap p-3 text-right text-xs font-semibold">
-                          <button onClick={() => setSelectedId(id)} className="text-blue-600">Аналитика</button>
-                          {row && status !== 'cancelled' && (
-                            <button onClick={() => setEditing(row)}>Изменить</button>
-                          )}
+                          <button onClick={() => setSelectedId(id)} className="text-blue-600">{tr('organizer.analytics')}</button>
+                          <Link to={`/organizer/events/${id}`}>{tr('organizer.manage')}</Link>
                           {status === 'draft' && (
-                            <button onClick={() => doAction(() => organizerApi.publish(token, id))} className="text-emerald-700">Опубликовать</button>
+                            <button onClick={() => doAction('publish', id)} className="text-emerald-700">{tr('manage.publish')}</button>
                           )}
                           {status === 'published' && (
-                            <button onClick={() => doAction(() => organizerApi.unpublish(token, id))}>Снять</button>
+                            <button onClick={() => doAction('unpublish', id)}>{tr('manage.unpublish')}</button>
                           )}
                           {status !== 'cancelled' && (
                             <button
                               onClick={() => {
-                                if (confirm('Отменить событие? Это нельзя вернуть.')) {
-                                  doAction(() => organizerApi.cancel(token, id));
-                                }
+                                if (window.confirm(tr('manage.confirmCancel', { title: a.event.title }))) doAction('cancel', id);
                               }}
                               className="text-red-600"
                             >
-                              Отменить
+                              {tr('manage.cancelEvent')}
                             </button>
                           )}
-                          <Link to={`/events/${id}`} className="text-gray-500">Открыть</Link>
+                          <Link to={`/events/${id}`} target="_blank" rel="noreferrer" className="text-gray-500">{tr('manage.preview')}</Link>
                         </td>
                       </tr>
                     );
@@ -217,7 +210,7 @@ export function OrganizerDashboard() {
                   {list.length === 0 && (
                     <tr>
                       <td colSpan={6} className="p-8 text-center text-gray-500">
-                        {t.events === 0 ? 'Пока нет событий, создайте первое.' : 'В этой категории событий нет.'}
+                        {t.events === 0 ? tr('organizer.noEvents') : tr('organizer.noEventsInPhase')}
                       </td>
                     </tr>
                   )}
@@ -235,6 +228,7 @@ export function OrganizerDashboard() {
 
 // детальная аналитика одного события
 function EventAnalyticsPanel({ token, summary, onClose }: { token: string; summary: EventAnalytics; onClose: () => void }) {
+  const { t } = useTranslation();
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [typeId, setTypeId] = useState('');
@@ -254,20 +248,20 @@ function EventAnalyticsPanel({ token, summary, onClose }: { token: string; summa
   return (
     <section className="space-y-5">
       <div className="flex justify-between">
-        <h2 className="text-xl font-bold">Аналитика: {a.event.title}</h2>
-        <button onClick={onClose} className="text-sm text-gray-500">Скрыть</button>
+        <h2 className="text-xl font-bold">{t('analytics.title', { title: a.event.title })}</h2>
+        <button onClick={onClose} className="text-sm text-gray-500">{t('analytics.hide')}</button>
       </div>
 
       <div className="flex flex-wrap items-end gap-3 rounded-xl border border-gray-100 bg-white p-4 shadow-sm">
-        <label className="text-xs">С даты<br />
+        <label className="text-xs">{t('analytics.dateFrom')}<br />
           <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="rounded-md border border-gray-300 px-2 py-1.5 text-sm" />
         </label>
-        <label className="text-xs">По дату<br />
+        <label className="text-xs">{t('analytics.dateTo')}<br />
           <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="rounded-md border border-gray-300 px-2 py-1.5 text-sm" />
         </label>
-        <label className="text-xs">Тип билета<br />
+        <label className="text-xs">{t('analytics.ticketType')}<br />
           <select value={typeId} onChange={(e) => setTypeId(e.target.value)} className="rounded-md border border-gray-300 px-2 py-1.5 text-sm">
-            <option value="">Все</option>
+            <option value="">{t('filters.all')}</option>
             {summary.by_ticket_type.map((tt) => (
               <option key={tt.ticket_type_id} value={tt.ticket_type_id}>{tt.name}</option>
             ))}
@@ -275,7 +269,7 @@ function EventAnalyticsPanel({ token, summary, onClose }: { token: string; summa
         </label>
         {hasFilters && (
           <button onClick={() => { setDateFrom(''); setDateTo(''); setTypeId(''); }} className="pb-2 text-xs font-semibold text-blue-600">
-            Сбросить
+            {t('analytics.reset')}
           </button>
         )}
       </div>
@@ -284,52 +278,52 @@ function EventAnalyticsPanel({ token, summary, onClose }: { token: string; summa
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <StatCard
-          label="Продано"
+          label={t('analytics.sold')}
           value={`${a.capacity.sold} / ${a.capacity.total ?? '∞'}`}
-          sub={a.capacity.remaining !== null ? `осталось ${a.capacity.remaining}, ${percent(a.capacity.percent_sold)}` : 'без лимита'}
+          sub={a.capacity.remaining !== null ? t('analytics.remaining', { count: a.capacity.remaining, percent: percent(a.capacity.percent_sold) }) : t('organizer.stats.unlimited')}
         />
-        <StatCard label="Валовые продажи" value={formatKZT(a.revenue.gross_kzt)} sub={`${a.revenue.orders} заказов`} />
+        <StatCard label={t('organizer.stats.gross')} value={formatKZT(a.revenue.gross_kzt)} sub={t('analytics.orders', { count: a.revenue.orders })} />
         <StatCard
-          label="Чистая выручка"
+          label={t('organizer.stats.net')}
           value={formatKZT(a.revenue.net_kzt)}
-          sub={`скидки −${formatKZT(a.revenue.discounts_kzt)}, возвраты −${formatKZT(a.revenue.refunds_kzt)}`}
+          sub={`${t('organizer.stats.discounts', { amount: formatKZT(a.revenue.discounts_kzt) })}, ${t('organizer.stats.refunds', { amount: formatKZT(a.revenue.refunds_kzt) })}`}
         />
         <StatCard
-          label="Пришли / не пришли"
+          label={t('analytics.attendance')}
           value={`${a.attendance.checked_in} / ${a.attendance.absent}`}
-          sub={`check-in ${percent(a.attendance.percent_checked_in)}`}
+          sub={`${t('organizer.stats.checkIn')} ${percent(a.attendance.percent_checked_in)}`}
         />
       </div>
 
       <div className="rounded-xl border border-gray-100 bg-white p-5 shadow-sm">
-        <h3 className="mb-2 font-semibold">Продажи по дням</h3>
-        {data?.sales_over_time ? <SalesChart points={data.sales_over_time} /> : <p className="py-10 text-center text-sm text-gray-500">Загрузка...</p>}
+        <h3 className="mb-2 font-semibold">{t('analytics.salesByDay')}</h3>
+        {data?.sales_over_time ? <SalesChart points={data.sales_over_time} /> : <p className="py-10 text-center text-sm text-gray-500">{t('common.loading')}</p>}
       </div>
 
       <div className="grid gap-5 lg:grid-cols-2">
         <div className="rounded-xl border border-gray-100 bg-white p-5 shadow-sm">
-          <h3 className="mb-3 font-semibold">По типам билетов</h3>
-          {a.by_ticket_type.length === 0 && <p className="text-sm text-gray-500">Типов билетов нет.</p>}
+          <h3 className="mb-3 font-semibold">{t('analytics.byType')}</h3>
+          {a.by_ticket_type.length === 0 && <p className="text-sm text-gray-500">{t('analytics.noTypes')}</p>}
           {a.by_ticket_type.map((tt) => (
             <div key={tt.ticket_type_id} className="mb-4">
               <div className="mb-1 flex justify-between text-sm">
-                <span className="font-medium">{tt.name} · {tt.price_kzt > 0 ? formatKZT(tt.price_kzt) : 'бесплатно'}</span>
+                <span className="font-medium">{tt.name} · {tt.price_kzt > 0 ? formatKZT(tt.price_kzt) : t('common.free')}</span>
                 <span>{tt.sold}/{tt.capacity ?? '∞'} · {formatKZT(tt.revenue_kzt)}</span>
               </div>
               <Bar value={tt.percent_sold} />
-              <p className="mt-1 text-xs text-gray-500">check-in: {tt.checked_in}</p>
+              <p className="mt-1 text-xs text-gray-500">{t('organizer.stats.checkIn')}: {tt.checked_in}</p>
             </div>
           ))}
         </div>
 
         <div className="rounded-xl border border-gray-100 bg-white p-5 shadow-sm">
-          <h3 className="mb-3 font-semibold">Промокоды</h3>
+          <h3 className="mb-3 font-semibold">{t('organizer.stats.promo')}</h3>
           {a.campaigns.length === 0 ? (
-            <p className="text-sm text-gray-500">Заказов с промокодами пока нет.</p>
+            <p className="text-sm text-gray-500">{t('analytics.noPromo')}</p>
           ) : (
             <table className="w-full text-sm">
               <thead className="text-left text-xs text-gray-500">
-                <tr><th>Код</th><th className="text-right">Погашений</th><th className="text-right">Скидка</th><th className="text-right">Выручка</th></tr>
+                <tr><th>{t('analytics.code')}</th><th className="text-right">{t('analytics.redemptions')}</th><th className="text-right">{t('analytics.discount')}</th><th className="text-right">{t('organizer.table.revenue')}</th></tr>
               </thead>
               <tbody>
                 {a.campaigns.map((c) => (
@@ -344,7 +338,7 @@ function EventAnalyticsPanel({ token, summary, onClose }: { token: string; summa
             </table>
           )}
           <p className="mt-3 text-xs text-gray-500">
-            Отменено: {a.cancellations.cancelled}, возвращено: {a.cancellations.refunded}
+            {t('analytics.cancellations', { cancelled: a.cancellations.cancelled, refunded: a.cancellations.refunded })}
           </p>
         </div>
       </div>
