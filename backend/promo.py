@@ -1,132 +1,70 @@
 import os
 import secrets
-import sqlite3
-from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
-from fastapi import APIRouter, HTTPException, Request
+from datetime import datetime, timezone
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field, model_validator
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "promo.db")
-HOLD_MINUTES = 15
+from deps import db_for_user, get_current_user, supabase
+from schemas import CurrentUser, ROLE_ORGANIZER
+
+PUBLIC_API_URL = os.getenv("PUBLIC_API_URL", "http://localhost:8000").rstrip("/")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173").rstrip("/")
+
 router = APIRouter()
 
-def get_conn():
-    conn = sqlite3.connect(DB_PATH, isolation_level=None, timeout=10)
-    conn.row_factory = sqlite3.Row
-    return conn
+RPC_ERRORS = {
+    "AUTH_REQUIRED": 401,
+    "NOT_EVENT_OWNER": 403,
+    "EVENT_NOT_FOUND": 404,
+    "TICKET_TYPE_NOT_FOUND": 404,
+    "PROMO_NOT_FOUND": 404,
+    "HOLD_NOT_FOUND": 404,
+    "PROMO_CODE_EXISTS": 409,
+    "SOLD_OUT": 409,
+    "HOLD_NOT_ACTIVE": 409,
+    "HOLD_EXPIRED": 410,
+    "PAID_SALES_INACTIVE": 402,
+    "EVENT_NOT_ON_SALE": 400,
+    "SALE_WINDOW_CLOSED": 400,
+    "MAX_PER_ORDER": 400,
+    "BAD_QUANTITY": 400,
+    "BAD_TICKETS": 400,
+    "PROMO_INACTIVE": 400,
+    "PROMO_EXHAUSTED": 400,
+}
 
-@contextmanager
-def transaction():
-    conn = get_conn()
+
+def call_rpc(db, fn: str, params: dict):
+    """Вызывает Postgres-функцию и переводит её ошибки в HTTP."""
     try:
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            yield conn
-            conn.execute("COMMIT")
-        except Exception:
-            conn.execute("ROLLBACK")
-            raise
-    finally:
-        conn.close()
+        return db.rpc(fn, params).execute().data
+    except HTTPException:
+        raise
+    except Exception as e:
+        msg = str(getattr(e, "message", None) or e)
+        for code, http_status in RPC_ERRORS.items():
+            if code in msg:
+                raise HTTPException(http_status, code)
+        raise HTTPException(500, msg)
 
-def init_db():
-    conn = get_conn()
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS campaigns (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            discount_percent INTEGER NOT NULL,
-            starts_at TEXT NOT NULL,
-            ends_at TEXT NOT NULL,
-            qr_slug TEXT NOT NULL UNIQUE,
-            qr_scans INTEGER NOT NULL DEFAULT 0
-        );
-        CREATE TABLE IF NOT EXISTS promo_codes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            campaign_id INTEGER NOT NULL REFERENCES campaigns(id),
-            code TEXT NOT NULL UNIQUE,
-            max_uses INTEGER NOT NULL,
-            used_count INTEGER NOT NULL DEFAULT 0
-        );
-        CREATE TABLE IF NOT EXISTS ticket_types (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            price_kzt INTEGER NOT NULL,
-            stock INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS holds (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ticket_type_id INTEGER NOT NULL REFERENCES ticket_types(id),
-            quantity INTEGER NOT NULL,
-            promo_code_id INTEGER NOT NULL REFERENCES promo_codes(id),
-            subtotal_kzt INTEGER NOT NULL,
-            discount_kzt INTEGER NOT NULL,
-            total_kzt INTEGER NOT NULL,
-            status TEXT NOT NULL DEFAULT 'active',
-            expires_at TEXT NOT NULL,
-            created_at TEXT NOT NULL
-        );
-        """
-    )
-    if conn.execute("SELECT COUNT(*) FROM ticket_types").fetchone()[0] == 0:
-        conn.executemany(
-            "INSERT INTO ticket_types (name, price_kzt, stock) VALUES (?, ?, ?)",
-            [("Standard", 5000, 100), ("VIP", 15000, 20)],
-        )
-    conn.close()
 
-init_db()
+def require_organizer(user: CurrentUser) -> None:
+    if (user.role or "").strip().lower() != ROLE_ORGANIZER:
+        raise HTTPException(403, "Organizer role required.")
 
-def now_utc():
-    return datetime.now(timezone.utc)
 
-def to_utc(dt):
+def to_utc(dt: datetime) -> datetime:
     return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
-
-def lookup_promo(code: str) -> dict:
-    """Validate a promo code without redeeming it. Raises HTTPException with a clear message."""
-    code = code.strip().upper()
-    conn = get_conn()
-    try:
-        promo = conn.execute(
-            """SELECT p.id, p.code, p.max_uses, p.used_count, c.discount_percent, c.starts_at, c.ends_at
-               FROM promo_codes p JOIN campaigns c ON c.id = p.campaign_id WHERE p.code = ?""",
-            (code,),
-        ).fetchone()
-    finally:
-        conn.close()
-    if promo is None:
-        raise HTTPException(404, "Promo code not found")
-    now = now_utc()
-    if not (datetime.fromisoformat(promo["starts_at"]) <= now <= datetime.fromisoformat(promo["ends_at"])):
-        raise HTTPException(400, "Campaign is not active")
-    if promo["used_count"] >= promo["max_uses"]:
-        raise HTTPException(400, "Promo code usage limit reached")
-    return dict(promo)
-
-
-def redeem_promo(code: str) -> dict:
-    """Atomically consume one use of a promo code; raises if it is no longer redeemable."""
-    promo = lookup_promo(code)
-    with transaction() as db:
-        cur = db.execute(
-            "UPDATE promo_codes SET used_count = used_count + 1 WHERE id = ? AND used_count < max_uses",
-            (promo["id"],),
-        )
-        if cur.rowcount == 0:
-            raise HTTPException(400, "Promo code usage limit reached")
-    return promo
-
-
-def release_promo(promo_id: int) -> None:
-    """Give back a use consumed by ``redeem_promo`` when the order could not be created."""
-    with transaction() as db:
-        db.execute("UPDATE promo_codes SET used_count = used_count - 1 WHERE id = ? AND used_count > 0", (promo_id,))
 
 
 class CampaignIn(BaseModel):
+    event_id: str
     name: str = Field(min_length=1, max_length=100)
     discount_percent: int = Field(ge=1, le=100)
     code: str = Field(min_length=3, max_length=32, pattern=r"^[A-Za-z0-9_-]+$")
@@ -136,108 +74,64 @@ class CampaignIn(BaseModel):
 
     @model_validator(mode="after")
     def check_dates(self):
-        start = to_utc(self.starts_at) if self.starts_at else now_utc()
+        start = to_utc(self.starts_at) if self.starts_at else datetime.now(timezone.utc)
         if to_utc(self.ends_at) <= start:
             raise ValueError("ends_at must be later than starts_at")
         return self
 
+
 class ApplyPromoIn(BaseModel):
-    code: str = Field(min_length=1, max_length=32)
-    ticket_type_id: int
+    ticket_type_id: str
     quantity: int = Field(ge=1, le=10)
-
-@router.get("/api/tickets")
-def list_tickets():
-    conn = get_conn()
-    rows = conn.execute("SELECT * FROM ticket_types").fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
+    code: str | None = Field(default=None, max_length=32) 
+    
 @router.post("/api/campaigns", status_code=201)
-def create_campaign(body: CampaignIn, request: Request):
-    starts = to_utc(body.starts_at) if body.starts_at else now_utc()
-    ends = to_utc(body.ends_at)
-    code = body.code.upper()
+async def create_campaign(body: CampaignIn, user: CurrentUser = Depends(get_current_user)):
+    require_organizer(user)
+    db = db_for_user(user.access_token)
     slug = secrets.token_urlsafe(6)
-    try:
-        with transaction() as db:
-            cur = db.execute(
-                "INSERT INTO campaigns (name, discount_percent, starts_at, ends_at, qr_slug) VALUES (?, ?, ?, ?, ?)",
-                (body.name, body.discount_percent, starts.isoformat(), ends.isoformat(), slug),
-            )
-            campaign_id = cur.lastrowid
-            db.execute(
-                "INSERT INTO promo_codes (campaign_id, code, max_uses) VALUES (?, ?, ?)",
-                (campaign_id, code, body.max_uses),
-            )
-    except sqlite3.IntegrityError:
-        raise HTTPException(409, "Promo code already exists")
-    return {
-        "campaign_id": campaign_id,
-        "code": code,
-        "qr_link": f"{str(request.base_url).rstrip('/')}/c/{slug}",
-    }
+    data = call_rpc(db, "create_campaign", {
+        "p_event_id": body.event_id,
+        "p_name": body.name,
+        "p_discount_percent": body.discount_percent,
+        "p_code": body.code,
+        "p_max_uses": body.max_uses,
+        "p_ends_at": to_utc(body.ends_at).isoformat(),
+        "p_slug": slug,
+        "p_starts_at": to_utc(body.starts_at).isoformat() if body.starts_at else None,
+    })
+    return {**data, "qr_link": f"{PUBLIC_API_URL}/c/{slug}"}
+
 
 @router.post("/api/checkout/apply-promo")
-def apply_promo(body: ApplyPromoIn):
-    code = body.code.strip().upper()
-    now = now_utc()
-    with transaction() as db:
-        expired = db.execute(
-            "SELECT * FROM holds WHERE status = 'active' AND expires_at < ?",
-            (now.isoformat(),),
-        ).fetchall()
-        for h in expired:
-            db.execute("UPDATE ticket_types SET stock = stock + ? WHERE id = ?", (h["quantity"], h["ticket_type_id"]))
-            db.execute("UPDATE promo_codes SET used_count = used_count - 1 WHERE id = ?", (h["promo_code_id"],))
-            db.execute("UPDATE holds SET status = 'expired' WHERE id = ?", (h["id"],))
-        promo = db.execute(
-            """SELECT p.id, p.max_uses, p.used_count, c.discount_percent, c.starts_at, c.ends_at
-               FROM promo_codes p JOIN campaigns c ON c.id = p.campaign_id
-               WHERE p.code = ?""",
-            (code,),
-        ).fetchone()
-        if promo is None:
-            raise HTTPException(404, "Promo code not found")
-        if not (datetime.fromisoformat(promo["starts_at"]) <= now <= datetime.fromisoformat(promo["ends_at"])):
-            raise HTTPException(400, "Campaign is not active")
-        if promo["used_count"] >= promo["max_uses"]:
-            raise HTTPException(400, "Promo code usage limit reached")
-        ticket = db.execute("SELECT * FROM ticket_types WHERE id = ?", (body.ticket_type_id,)).fetchone()
-        if ticket is None:
-            raise HTTPException(404, "Ticket type not found")
-        if ticket["stock"] < body.quantity:
-            raise HTTPException(409, f"Not enough tickets, left: {ticket['stock']}")
-        subtotal = ticket["price_kzt"] * body.quantity
-        discount = subtotal * promo["discount_percent"] // 100
-        total = subtotal - discount
-        db.execute("UPDATE ticket_types SET stock = stock - ? WHERE id = ?", (body.quantity, ticket["id"]))
-        db.execute("UPDATE promo_codes SET used_count = used_count + 1 WHERE id = ?", (promo["id"],))
-        expires = now + timedelta(minutes=HOLD_MINUTES)
-        cur = db.execute(
-            """INSERT INTO holds (ticket_type_id, quantity, promo_code_id, subtotal_kzt,
-               discount_kzt, total_kzt, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (ticket["id"], body.quantity, promo["id"], subtotal, discount, total, expires.isoformat(), now.isoformat()),
-        )
-        hold_id = cur.lastrowid
-    return {
-        "hold_id": hold_id,
-        "subtotal_kzt": subtotal,
-        "discount_kzt": discount,
-        "total_kzt": total,
-        "hold_expires_at": expires.isoformat(),
-    }
+async def apply_promo(body: ApplyPromoIn, user: CurrentUser = Depends(get_current_user)):
+    db = db_for_user(user.access_token)
+    return call_rpc(db, "create_ticket_hold", {
+        "p_ticket_type_id": body.ticket_type_id,
+        "p_quantity": body.quantity,
+        "p_promo_code": body.code,
+    })
+
 
 @router.get("/c/{slug}")
 def campaign_link(slug: str):
-    with transaction() as db:
-        row = db.execute(
-            "SELECT c.id, p.code FROM campaigns c JOIN promo_codes p ON p.campaign_id = c.id WHERE c.qr_slug = ?",
-            (slug,),
-        ).fetchone()
-        if row is None:
-            raise HTTPException(404, "Link not found")
-        db.execute("UPDATE campaigns SET qr_scans = qr_scans + 1 WHERE id = ?", (row["id"],))
-    # The QR is served by the API host; send the browser to the web app, which applies the code at checkout.
-    frontend = os.getenv("FRONTEND_URL", "http://localhost:5173").rstrip("/")
-    return RedirectResponse(f"{frontend}/checkout?promo={row['code']}")
+    data = call_rpc(supabase, "register_campaign_scan", {"p_slug": slug})
+    if not data:
+        raise HTTPException(404, "Link not found or campaign inactive")
+    return RedirectResponse(f"{FRONTEND_URL}/checkout?promo={data['code']}", status_code=302)
+
+def lookup_promo(code: str) -> dict:
+    data = call_rpc(supabase, "lookup_promo_code", {"p_code": code})
+    if not data:
+        raise HTTPException(404, "Promo code not found")
+    if not data["active"]:
+        raise HTTPException(400, "Campaign is not active")
+    if data["used"] >= data["max_uses"]:
+        raise HTTPException(400, "Promo code usage limit reached")
+    return data
+
+def redeem_promo(code: str) -> dict:
+    return lookup_promo(code)
+
+def release_promo(promo_id) -> None:
+    pass

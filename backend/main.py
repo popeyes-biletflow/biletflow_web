@@ -43,8 +43,10 @@ app = FastAPI(title="BiletFlow Auth API")
 from promo import lookup_promo, redeem_promo, release_promo
 from orders import FEE_PERCENT
 from routers.analytics import router as analytics_router
+from routers.event_history import router as event_history_router
 app.include_router(promo_router)
 app.include_router(analytics_router)
+app.include_router(event_history_router)
 app.include_router(tickets_router)
 app.include_router(support_router)
 app.include_router(organizer_router)
