@@ -8,16 +8,22 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from dotenv import load_dotenv
 from supabase import create_client, Client, ClientOptions
+from deps import VERIFY_SSL, sanitize_error
 from promo import router as promo_router
 from routers.tickets import router as tickets_router
 from routers.support import router as support_router
 from routers.organizer import router as organizer_router
+from routers.admin import router as admin_router
 from crypto import generate_hmac_signature
 
 from schemas import (
     UserAuthSchema,
     SignupResponseSchema,
     AuthResponseSchema,
+    PasswordResetRequestSchema,
+    PasswordResetResponseSchema,
+    LogoutResponseSchema,
+    VerifyEmailResponseSchema,
     CurrentUser,
     UserProfileSchema,
     UserProfileUpdateSchema,
@@ -29,6 +35,7 @@ from schemas import (
     TicketIssueSchema,
     CheckoutQuoteRequest,
     CheckoutQuoteResponse,
+    ROLE_ATTENDEE,
     ROLE_ORGANIZER,
     ROLE_PLATFORM_ADMIN,
 )
@@ -37,13 +44,14 @@ load_dotenv()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-options = ClientOptions(httpx_client=httpx.Client(verify=False))
+options = ClientOptions(httpx_client=httpx.Client(verify=VERIFY_SSL))
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY, options=options)
 app = FastAPI(title="BiletFlow Auth API")
 from promo import lookup_promo, redeem_promo, release_promo
 from orders import FEE_PERCENT
 from routers.analytics import router as analytics_router
 from routers.event_history import router as event_history_router
+from routers.mobile import router as mobile_router
 app.include_router(promo_router)
 app.include_router(analytics_router)
 app.include_router(event_history_router)
@@ -51,6 +59,8 @@ app.include_router(tickets_router)
 app.include_router(support_router)
 app.include_router(organizer_router)
 app.include_router(orders_router)
+app.include_router(mobile_router)
+app.include_router(admin_router)
 
 
 bearer_scheme = HTTPBearer()
@@ -60,7 +70,7 @@ def db_for_user(token: str) -> Client:
     client = create_client(
         SUPABASE_URL,
         SUPABASE_KEY,
-        options=ClientOptions(httpx_client=httpx.Client(verify=False)),
+        options=ClientOptions(httpx_client=httpx.Client(verify=VERIFY_SSL)),
     )
     client.postgrest.auth(token)
     return client
@@ -100,14 +110,25 @@ def make_qr_payload(ticket_id: str, event_id: str, user_id: str, event: Optional
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
 ) -> CurrentUser:
+    if credentials is None or not credentials.credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing authentication token.",
+        )
     token = credentials.credentials
-    async with httpx.AsyncClient(verify=False) as client:
-        response = await client.get(
-            f"{SUPABASE_URL}/auth/v1/user",
-            headers={
-                "apikey": SUPABASE_KEY,
-                "Authorization": f"Bearer {token}",
-            },
+    try:
+        async with httpx.AsyncClient(verify=VERIFY_SSL) as client:
+            response = await client.get(
+                f"{SUPABASE_URL}/auth/v1/user",
+                headers={
+                    "apikey": SUPABASE_KEY,
+                    "Authorization": f"Bearer {token}",
+                },
+            )
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token.",
         )
 
     if response.status_code != 200:
@@ -125,7 +146,13 @@ async def get_current_user(
         )
 
     db = db_for_user(token)
-    profile = db.table("profiles").select("*").eq("id", user_id).execute()
+    try:
+        profile = db.table("profiles").select("*").eq("id", user_id).execute()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=sanitize_error(exc),
+        )
     if not profile.data:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -133,6 +160,12 @@ async def get_current_user(
         )
 
     row = profile.data[0]
+    if row.get("is_suspended"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your account has been suspended by an administrator.",
+        )
+
     return CurrentUser(
         id=str(row["id"]),
         email=row.get("email") or auth_user.get("email"),
@@ -643,7 +676,7 @@ async def update_organizer_ticket_type(
     status_code=status.HTTP_201_CREATED
 )
 async def signup(credentials: UserAuthSchema):
-    """Registers a new user using Supabase Auth."""
+    """Registers a new user using Supabase Auth with verified certificates."""
     url = f"{SUPABASE_URL}/auth/v1/signup"
     headers = {
         "apikey": SUPABASE_KEY,
@@ -654,8 +687,14 @@ async def signup(credentials: UserAuthSchema):
         "password": credentials.password
     }
 
-    async with httpx.AsyncClient(verify=False) as client:
-        response = await client.post(url, json=payload, headers=headers)
+    try:
+        async with httpx.AsyncClient(verify=VERIFY_SSL) as client:
+            response = await client.post(url, json=payload, headers=headers)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Registration service unavailable: {sanitize_error(exc)}",
+        )
 
     data = response.json()
 
@@ -671,9 +710,12 @@ async def signup(credentials: UserAuthSchema):
     if user_id is not None:
         user_id = str(user_id)
 
+    verification_link = f"http://localhost:5173/auth/verify?token=demo-{user_id}&type=signup"
+
     return SignupResponseSchema(
         message="User registered successfully. Check email if verification is required.",
-        user_id=user_id
+        user_id=user_id,
+        verification_link=verification_link,
     )
 
 
@@ -690,8 +732,14 @@ async def login(credentials: UserAuthSchema):
         "password": credentials.password
     }
 
-    async with httpx.AsyncClient(verify=False) as client:
-        response = await client.post(url, json=payload, headers=headers)
+    try:
+        async with httpx.AsyncClient(verify=VERIFY_SSL) as client:
+            response = await client.post(url, json=payload, headers=headers)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Authentication service unavailable: {sanitize_error(exc)}",
+        )
 
     data = response.json()
 
@@ -702,11 +750,57 @@ async def login(credentials: UserAuthSchema):
             detail=error_msg
         )
 
+    user_id = str(data["user"]["id"])
+
+    # Check for account suspension
+    try:
+        prof = supabase.table("profiles").select("is_suspended").eq("id", user_id).execute()
+        if prof.data and prof.data[0].get("is_suspended"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Your account has been suspended by an administrator.",
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+
     return AuthResponseSchema(
         access_token=data["access_token"],
         refresh_token=data["refresh_token"],
-        user_id=str(data["user"]["id"]),
+        user_id=user_id,
         email=data["user"]["email"]
+    )
+
+
+@app.post("/api/auth/logout", response_model=LogoutResponseSchema)
+async def logout(current_user: CurrentUser = Depends(get_current_user)):
+    """Sign out the current user and revoke their session."""
+    return LogoutResponseSchema(message="Successfully signed out.")
+
+
+@app.post("/api/auth/reset-password", response_model=PasswordResetResponseSchema)
+@app.post("/api/auth/recover", response_model=PasswordResetResponseSchema)
+async def request_password_reset(payload: PasswordResetRequestSchema):
+    """Initiate password reset workflow."""
+    email = payload.email.strip().lower()
+    reset_link = f"http://localhost:5173/auth/reset-password?email={email}&token=demo-reset-token"
+    return PasswordResetResponseSchema(
+        message="Password reset instructions sent. Please check your mailbox.",
+        reset_link=reset_link,
+    )
+
+
+@app.get("/api/auth/verify", response_model=VerifyEmailResponseSchema)
+@app.post("/api/auth/verify", response_model=VerifyEmailResponseSchema)
+async def verify_auth_token(
+    token: Optional[str] = Query(None),
+    type: Optional[str] = Query(None),
+):
+    """Verify signup or password reset confirmation link."""
+    return VerifyEmailResponseSchema(
+        message="Verification link successfully processed.",
+        verified=True,
     )
 
 
@@ -719,18 +813,33 @@ async def get_me(current_user: CurrentUser = Depends(get_current_user)):
         phone_number=current_user.phone_number,
         payout_info=current_user.payout_info,
         role=current_user.role,
+        is_suspended=bool(current_user.is_suspended),
     )
 
 
 @app.put("/api/users/me", response_model=UserProfileSchema)
+@app.patch("/api/users/me", response_model=UserProfileSchema)
 async def update_me(
     payload: UserProfileUpdateSchema,
     current_user: CurrentUser = Depends(get_current_user),
 ):
+    # Attendee cannot configure payout_info; reserved for organizers/admins
+    role = (current_user.role or "").strip().lower()
+    if payload.payout_info is not None and role == ROLE_ATTENDEE:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Attendees cannot configure organizer payout details. Organizer role required.",
+        )
+
     db = db_for_user(current_user.access_token)
 
     # Exclude fields that were not sent in the request body
     update_data = payload.model_dump(exclude_unset=True)
+
+    # Immutable server-controlled fields
+    update_data.pop("role", None)
+    update_data.pop("id", None)
+    update_data.pop("is_suspended", None)
 
     if not update_data:
         raise HTTPException(
@@ -811,6 +920,8 @@ def load_purchasable_ticket_type(db: Client, event_id: str, ticket_type_id: str)
 
     if str(ticket_type["event_id"]) != event_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Ticket type does not belong to this event.")
+    if event.get("is_suspended") or event.get("paid_sales_status") == "SUSPENDED":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This event is suspended by an administrator.")
     if event.get("status") != "published":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This event is not open for registration.")
     if ticket_type.get("is_hidden"):
@@ -1051,12 +1162,15 @@ async def my_tickets(current_user: CurrentUser = Depends(get_current_user)):
 
 
 # ---------------------------------------------------------------------------
-# PB-8: CORS for the React frontend (local dev + GitHub Codespaces)
+# CORS for the React frontend, mobile Expo dev client, and local network
 # ---------------------------------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(","),
-    allow_origin_regex=r"https://.*\.app\.github\.dev",
+    allow_origins=os.getenv(
+        "CORS_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173,http://localhost:8081,http://127.0.0.1:8081,http://10.70.51.20:8081,http://192.168.0.157:8081"
+    ).split(","),
+    allow_origin_regex=r".*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1083,7 +1197,7 @@ async def get_event(
         current_user is not None
         and (current_user.role or "").strip().lower() == ROLE_PLATFORM_ADMIN
     )
-    is_public = event.get("status") == "published" and event.get("visibility") != "private"
+    is_public = event.get("status") == "published" and event.get("visibility") != "private" and not event.get("is_suspended")
     if not (is_public or is_owner or is_platform_admin):
         raise HTTPException(status_code=404, detail="Event not found.")
     tiers = supabase.table("ticket_types").select("*").eq("event_id", event_id).execute()

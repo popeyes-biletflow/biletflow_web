@@ -1,4 +1,4 @@
-"""Support Cases router — PB-16.
+"""Support Cases router — PB-16 & FS-05.
 
 Endpoints
 ---------
@@ -6,7 +6,9 @@ POST   /api/support/cases                        – open a new case
 GET    /api/support/cases                        – list cases (paginated)
 GET    /api/support/cases/{case_id}              – fetch case + messages
 POST   /api/support/cases/{case_id}/messages     – add a message
-PATCH  /api/support/cases/{case_id}/status       – update status (platform_admin or owning organizer on attendee cases)
+PATCH  /api/support/cases/{case_id}/status       – update status & assignment
+GET    /api/support/notifications                – list user's notifications
+PATCH  /api/support/notifications/{id}/read      – mark notification as read
 
 Access control matrix (assert_can_access_case)
 ----------------------------------------------
@@ -16,20 +18,21 @@ organizer       → own cases + attendee cases for events they manage
 platform_admin  → all cases, and the only one who handles organizer-opened cases
 """
 import uuid
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from deps import db_for_user, get_current_user, supabase
+from deps import db_for_user, get_current_user, sanitize_error, supabase
 from schemas import (
     CurrentUser,
-    SupportCaseCreateRequest,
-    SupportMessageCreateRequest,
-    SupportCaseStatusUpdateRequest,
+    NotificationItem,
     ROLE_ATTENDEE,
-    ROLE_ORGANIZER,
     ROLE_EVENT_ADMIN,
+    ROLE_ORGANIZER,
     ROLE_PLATFORM_ADMIN,
+    SupportCaseCreateRequest,
+    SupportCaseStatusUpdateRequest,
+    SupportMessageCreateRequest,
 )
 
 router = APIRouter(prefix="/api/support", tags=["support"])
@@ -54,6 +57,21 @@ ORGANIZER_PLATFORM_CATEGORIES = {"account", "payment", "technical"}
 # ---------------------------------------------------------------------------
 # Reusable Access-control & Event-derivation helpers
 # ---------------------------------------------------------------------------
+
+def emit_notification(user_id: str, type_: str, title: str, message: str, data: Optional[dict[str, Any]] = None) -> None:
+    """Emit recipient-scoped notification record in database."""
+    try:
+        supabase.table("notifications").insert({
+            "user_id": user_id,
+            "type": type_,
+            "title": title,
+            "message": message,
+            "data": data or {},
+            "read": False,
+        }).execute()
+    except Exception:
+        pass
+
 
 def _organizer_owns_event(event_id: str, organizer_id: str, client: Any = None) -> bool:
     """Return True if the given organizer owns the event."""
@@ -124,7 +142,6 @@ def assert_can_access_case(
     if role in (ROLE_ATTENDEE, ROLE_EVENT_ADMIN):
         if is_requester:
             return
-        # Use 404 to avoid revealing case existence to unauthorized users
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
 
     # Organizer: attendee cases for events they manage, plus their own platform-support cases
@@ -135,10 +152,8 @@ def assert_can_access_case(
         sb = client if client is not None else supabase
         event_id = _derive_event_id_for_case(case, sb)
         if not event_id:
-            # Platform-support cases opened by others are invisible to this organizer
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
 
-        # Organizer must manage the event linked to this case
         owns_event = _organizer_owns_event(str(event_id), current_user.id, client=sb)
         if not owns_event:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not manage this event.")
@@ -160,7 +175,6 @@ def assert_can_access_case(
 
         return
 
-    # Any other unrecognized role
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
 
 
@@ -176,14 +190,12 @@ async def create_case(
     """Open a new support case with an initial message."""
     role = (current_user.role or ROLE_ATTENDEE).strip().lower()
 
-    # --- Validate category ---
     if payload.category not in VALID_CATEGORIES:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Invalid category. Must be one of: {sorted(VALID_CATEGORIES)}",
         )
 
-    # --- Validate message body ---
     message_text = (payload.message or payload.body or "").strip()
     if not message_text:
         raise HTTPException(
@@ -196,7 +208,6 @@ async def create_case(
             detail="Message body must not exceed 5 000 characters.",
         )
 
-    # --- Validate subject ---
     subject_text = (payload.subject or "").strip()
     if not subject_text:
         raise HTTPException(
@@ -210,14 +221,14 @@ async def create_case(
     order_id = payload.order_id
     ticket_id = payload.ticket_id
 
-    # --- 1. Resolve ticket_id → order_id / event_id (ticket implies order & event) ---
+    # 1. Resolve ticket_id
     if ticket_id:
         try:
             t_res = db.table("tickets").select("*").eq("id", ticket_id).execute()
         except Exception as exc:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=str(exc),
+                detail=sanitize_error(exc),
             )
         if not t_res.data:
             raise HTTPException(
@@ -226,7 +237,6 @@ async def create_case(
             )
         ticket_row = t_res.data[0]
 
-        # Ownership: attendee must own the ticket; organizer must own the event
         if role in (ROLE_ATTENDEE, ROLE_EVENT_ADMIN) and str(ticket_row.get("user_id")) != current_user.id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -240,13 +250,12 @@ async def create_case(
                     detail="You do not manage the event for this ticket.",
                 )
 
-        # Auto-fill order_id and event_id from ticket
         if not order_id and ticket_row.get("order_id"):
             order_id = str(ticket_row["order_id"])
         if not event_id and ticket_row.get("event_id"):
             event_id = str(ticket_row["event_id"])
 
-    # --- 2. Resolve order_id: orders has NO event_id, derive via tickets ---
+    # 2. Resolve order_id
     if order_id:
         try:
             o_res = (
@@ -258,7 +267,7 @@ async def create_case(
         except Exception as exc:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=str(exc),
+                detail=sanitize_error(exc),
             )
         if not o_res.data:
             raise HTTPException(
@@ -267,14 +276,12 @@ async def create_case(
             )
         order_row = o_res.data[0]
 
-        # Attendees may only link orders they own (orders.user_id)
         if role in (ROLE_ATTENDEE, ROLE_EVENT_ADMIN) and str(order_row.get("user_id")) != current_user.id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You do not own this order.",
             )
 
-        # Derive event_id via tickets (tickets.order_id -> tickets.event_id)
         if not event_id:
             try:
                 t_order_res = (
@@ -296,10 +303,8 @@ async def create_case(
                     detail="You do not manage the event for this order.",
                 )
 
-    # --- 3. Role-specific rules for organizer cases ---
+    # 3. Role-specific rules for organizer cases
     if role == ROLE_ORGANIZER:
-        # Organizers may open platform-support cases only for account, payment, or technical issues,
-        # or activation problems on their own events.
         if not event_id:
             if payload.category not in ORGANIZER_PLATFORM_CATEGORIES:
                 raise HTTPException(
@@ -316,7 +321,7 @@ async def create_case(
                     detail="You do not manage this event.",
                 )
 
-    # --- 4. Insert case (starts OPEN) ---
+    # 4. Insert case
     case_data: dict[str, Any] = {
         "requester_id": current_user.id,
         "category": payload.category,
@@ -335,7 +340,7 @@ async def create_case(
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(exc),
+            detail=sanitize_error(exc),
         )
     if not case_res.data:
         raise HTTPException(
@@ -345,7 +350,7 @@ async def create_case(
     case_row = case_res.data[0]
     case_id = str(case_row["id"])
 
-    # --- 5. Insert first message (append-only) ---
+    # 5. Insert first message
     try:
         msg_res = (
             db.table("support_messages")
@@ -359,8 +364,36 @@ async def create_case(
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(exc),
+            detail=sanitize_error(exc),
         )
+
+    # Audit & Notification events
+    try:
+        supabase.table("audit_log").insert({
+            "action": "SUPPORT_CASE_CREATED",
+            "performed_by": current_user.id,
+            "entity_type": "support_case",
+            "entity_id": case_id,
+            "metadata": {"category": payload.category, "event_id": event_id, "subject": subject_text},
+        }).execute()
+    except Exception:
+        pass
+
+    if event_id:
+        try:
+            ev = supabase.table("events").select("organizer_id").eq("id", event_id).execute()
+            if ev.data and ev.data[0].get("organizer_id"):
+                org_id = str(ev.data[0]["organizer_id"])
+                if org_id != current_user.id:
+                    emit_notification(
+                        user_id=org_id,
+                        type_="SUPPORT_CASE_CREATED",
+                        title=f"New support case: {subject_text}",
+                        message=f"Attendee opened a case regarding: {message_text[:80]}",
+                        data={"case_id": case_id, "event_id": event_id},
+                    )
+        except Exception:
+            pass
 
     return {
         "case": case_row,
@@ -392,7 +425,6 @@ async def list_cases(
         if role in (ROLE_ATTENDEE, ROLE_EVENT_ADMIN):
             query = query.eq("requester_id", current_user.id)
         elif role == ROLE_ORGANIZER:
-            # Fetch events owned by this organizer
             event_ids: list[str] = []
             try:
                 ev_res = (
@@ -413,7 +445,6 @@ async def list_cases(
                 )
             else:
                 query = query.eq("requester_id", current_user.id)
-        # platform_admin: no additional user filter
 
         if status_filter:
             query = query.eq("status", status_filter)
@@ -428,7 +459,7 @@ async def list_cases(
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(exc),
+            detail=sanitize_error(exc),
         )
 
     return {
@@ -460,7 +491,7 @@ async def get_case(
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(exc),
+            detail=sanitize_error(exc),
         )
 
     if not case_res.data:
@@ -472,7 +503,6 @@ async def get_case(
     case_row = case_res.data[0]
     assert_can_access_case(case_row, current_user, client=db)
 
-    # Fetch messages ordered by created_at
     try:
         msg_res = (
             db.table("support_messages")
@@ -484,7 +514,7 @@ async def get_case(
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(exc),
+            detail=sanitize_error(exc),
         )
 
     return {
@@ -518,7 +548,6 @@ async def add_message(
 
     db = db_for_user(current_user.access_token)
 
-    # Fetch case
     try:
         case_res = (
             db.table("support_cases")
@@ -529,7 +558,7 @@ async def add_message(
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(exc),
+            detail=sanitize_error(exc),
         )
     if not case_res.data:
         raise HTTPException(
@@ -539,17 +568,14 @@ async def add_message(
 
     case_row = case_res.data[0]
 
-    # Guard: Return 409 if case is RESOLVED
     if case_row.get("status") == "RESOLVED":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Cannot add messages to a resolved case.",
         )
 
-    # Access control
     assert_can_access_case(case_row, current_user, client=db)
 
-    # Insert message (append-only)
     try:
         msg_res = (
             db.table("support_messages")
@@ -563,7 +589,7 @@ async def add_message(
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(exc),
+            detail=sanitize_error(exc),
         )
 
     if not msg_res.data:
@@ -571,6 +597,46 @@ async def add_message(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to add message.",
         )
+
+    # Emit notification to recipient
+    requester_id = str(case_row.get("requester_id", ""))
+    if current_user.id == requester_id:
+        recipient_id = case_row.get("assigned_to")
+        if not recipient_id and case_row.get("event_id"):
+            try:
+                ev = supabase.table("events").select("organizer_id").eq("id", case_row["event_id"]).execute()
+                if ev.data:
+                    recipient_id = ev.data[0].get("organizer_id")
+            except Exception:
+                pass
+        if recipient_id:
+            emit_notification(
+                user_id=str(recipient_id),
+                type_="SUPPORT_REPLY_RECEIVED",
+                title=f"New reply on case: {case_row.get('subject')}",
+                message=msg_body[:100],
+                data={"case_id": case_id},
+            )
+    else:
+        emit_notification(
+            user_id=requester_id,
+            type_="SUPPORT_REPLY_RECEIVED",
+            title=f"Support reply: {case_row.get('subject')}",
+            message=msg_body[:100],
+            data={"case_id": case_id},
+        )
+
+    # Audit log
+    try:
+        supabase.table("audit_log").insert({
+            "action": "SUPPORT_MESSAGE_ADDED",
+            "performed_by": current_user.id,
+            "entity_type": "support_message",
+            "entity_id": str(msg_res.data[0]["id"]),
+            "metadata": {"case_id": case_id},
+        }).execute()
+    except Exception:
+        pass
 
     return {"message": msg_res.data[0]}
 
@@ -585,16 +651,9 @@ async def update_case_status(
     payload: SupportCaseStatusUpdateRequest,
     current_user: CurrentUser = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Update case status.
-
-    Permissions:
-    - platform_admin: allowed on any case.
-    - owning organizer: allowed on attendee cases for their own events only.
-    - attendee, event_admin, others: 403 Forbidden.
-    """
+    """Update case status and assign staff."""
     role = (current_user.role or ROLE_ATTENDEE).strip().lower()
 
-    # Attendees and event_admin (check-in staff only) get 403
     if role in (ROLE_ATTENDEE, ROLE_EVENT_ADMIN):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -615,7 +674,6 @@ async def update_case_status(
 
     db = db_for_user(current_user.access_token)
 
-    # Verify case exists
     try:
         case_res = (
             db.table("support_cases")
@@ -626,7 +684,7 @@ async def update_case_status(
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(exc),
+            detail=sanitize_error(exc),
         )
     if not case_res.data:
         raise HTTPException(
@@ -637,7 +695,6 @@ async def update_case_status(
     old_case = case_res.data[0]
     requester_id = str(old_case.get("requester_id", ""))
 
-    # Organizer-specific permission check
     if role == ROLE_ORGANIZER:
         event_id = _derive_event_id_for_case(old_case, db)
         if not event_id:
@@ -652,14 +709,12 @@ async def update_case_status(
                 detail="You do not manage the event associated with this case.",
             )
 
-        # Organizers cannot change status on their own cases
         if requester_id == current_user.id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Organizers cannot update the status of their own support cases.",
             )
 
-        # Case must be opened by an attendee (not another organizer or platform_admin)
         try:
             prof_res = db.table("profiles").select("role").eq("id", requester_id).execute()
             if prof_res.data:
@@ -675,7 +730,6 @@ async def update_case_status(
             pass
 
     assign_requested = bool(payload.assign_to_caller or payload.assign_to_me)
-
     update_data: dict[str, Any] = {"status": payload.status}
     if assign_requested:
         update_data["assigned_to"] = current_user.id
@@ -690,10 +744,9 @@ async def update_case_status(
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(exc),
+            detail=sanitize_error(exc),
         )
 
-    # Write to audit log
     try:
         supabase.table("audit_log").insert({
             "action": "SUPPORT_CASE_STATUS_CHANGED",
@@ -707,9 +760,63 @@ async def update_case_status(
             },
         }).execute()
     except Exception:
-        pass  # Audit failures are non-fatal
+        pass
 
-    # TODO: dispatch notification to requester_id regarding case status change (stub)
+    emit_notification(
+        user_id=requester_id,
+        type_="SUPPORT_CASE_STATUS_CHANGED",
+        title=f"Case status updated to {payload.status}",
+        message=f"Your support case has been marked as {payload.status}.",
+        data={"case_id": case_id, "status": payload.status},
+    )
 
     updated_case = upd_res.data[0] if upd_res.data else {**old_case, **update_data}
     return {"case": updated_case}
+
+
+# ---------------------------------------------------------------------------
+# Notifications
+# ---------------------------------------------------------------------------
+
+@router.get("/notifications", response_model=list[NotificationItem])
+def list_notifications(
+    current_user: CurrentUser = Depends(get_current_user),
+) -> list[NotificationItem]:
+    """Fetch notifications for the signed-in user."""
+    try:
+        res = (
+            supabase.table("notifications")
+            .select("*")
+            .eq("user_id", current_user.id)
+            .order("created_at", desc=True)
+            .execute()
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=sanitize_error(exc))
+
+    return [
+        NotificationItem(
+            id=str(r["id"]),
+            user_id=str(r["user_id"]),
+            type=r.get("type") or "INFO",
+            title=r.get("title") or "",
+            message=r.get("message") or "",
+            data=r.get("data"),
+            read=bool(r.get("read", False)),
+            created_at=str(r.get("created_at") or ""),
+        )
+        for r in (res.data or [])
+    ]
+
+
+@router.patch("/notifications/{notification_id}/read", status_code=status.HTTP_200_OK)
+def mark_notification_read(
+    notification_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Mark a notification as read."""
+    try:
+        supabase.table("notifications").update({"read": True}).eq("id", notification_id).eq("user_id", current_user.id).execute()
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=sanitize_error(exc))
+    return {"success": True}

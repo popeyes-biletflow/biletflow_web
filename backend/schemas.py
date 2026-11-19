@@ -10,6 +10,7 @@ ROLE_ORGANIZER = "organizer"
 ROLE_EVENT_ADMIN = "event_admin"
 ROLE_PLATFORM_ADMIN = "platform_admin"
 ALL_ROLES = {ROLE_ATTENDEE, ROLE_ORGANIZER, ROLE_EVENT_ADMIN, ROLE_PLATFORM_ADMIN}
+STAFF_ROLES = {ROLE_EVENT_ADMIN, ROLE_ORGANIZER, ROLE_PLATFORM_ADMIN, "admin"}
 
 
 class UserAuthSchema(BaseModel):
@@ -22,6 +23,7 @@ class SignupResponseSchema(BaseModel):
     """Schema for signup response."""
     message: str
     user_id: Optional[str] = None
+    verification_link: Optional[str] = None
 
 
 class AuthResponseSchema(BaseModel):
@@ -30,6 +32,31 @@ class AuthResponseSchema(BaseModel):
     refresh_token: str
     user_id: str
     email: str
+
+
+class PasswordResetRequestSchema(BaseModel):
+    """Request a password reset link."""
+    email: str
+
+
+class PasswordResetConfirmSchema(BaseModel):
+    """Confirm password reset with token."""
+    token: str
+    new_password: str
+
+
+class PasswordResetResponseSchema(BaseModel):
+    message: str
+    reset_link: Optional[str] = None
+
+
+class LogoutResponseSchema(BaseModel):
+    message: str
+
+
+class VerifyEmailResponseSchema(BaseModel):
+    message: str
+    verified: bool
 
 
 class CurrentUser(BaseModel):
@@ -41,6 +68,7 @@ class CurrentUser(BaseModel):
     payout_info: Optional[str] = None
     role: Optional[str] = None
     access_token: str
+    is_suspended: bool = False
 
 
 class UserProfileSchema(BaseModel):
@@ -51,10 +79,15 @@ class UserProfileSchema(BaseModel):
     phone_number: Optional[str] = None
     payout_info: Optional[str] = None
     role: Optional[str] = 'attendee'
+    is_suspended: bool = False
 
 
 class UserProfileUpdateSchema(BaseModel):
-    """Schema for updating user profile."""
+    """Schema for updating user profile.
+    
+    Self-service profile edits cannot change role or ownership.
+    payout_info is reserved for organizers and admins.
+    """
     full_name: Optional[str] = None
     phone_number: Optional[str] = None
     payout_info: Optional[str] = None  # e.g., IBAN / KZT account details
@@ -241,3 +274,86 @@ class PaidSalesActivationResponse(BaseModel):
     simulated: Optional[bool] = None
     checklist: Optional[dict[str, Any]] = None
 
+
+# ---------------------------------------------------------------------------
+# FS-03: Platform Moderation & Admin Schemas
+# ---------------------------------------------------------------------------
+
+class AdminUserItem(BaseModel):
+    id: str
+    email: str
+    full_name: Optional[str] = None
+    role: str = ROLE_ATTENDEE
+    payout_info: Optional[str] = None
+    is_suspended: bool = False
+    created_at: Optional[str] = None
+
+
+class AdminEventItem(BaseModel):
+    id: str
+    title: str
+    organizer_id: Optional[str] = None
+    status: str
+    visibility: str
+    paid_sales_status: str
+    paid_sales_active: bool
+    is_suspended: bool = False
+    created_at: Optional[str] = None
+
+
+class AdminSuspensionRequest(BaseModel):
+    reason: Optional[str] = None
+
+
+class AdminSuspensionResponse(BaseModel):
+    success: bool
+    suspended: bool
+    message: str
+    entity_id: str
+
+
+class ActivationFeeSettingSchema(BaseModel):
+    activation_fee_kzt: int
+
+
+class OperationalExportResponse(BaseModel):
+    events_count: int
+    orders_count: int
+    tickets_count: int
+    total_revenue_kzt: int
+    timestamp: str
+    events: list[dict[str, Any]] = []
+    orders: list[dict[str, Any]] = []
+
+
+# ---------------------------------------------------------------------------
+# FS-04: Staff Assignment & Admission Schemas
+# ---------------------------------------------------------------------------
+
+class StaffAssignmentRequest(BaseModel):
+    user_id: Optional[str] = None
+    email: Optional[str] = None
+
+
+class StaffAssignmentItem(BaseModel):
+    id: str
+    event_id: str
+    user_id: str
+    email: Optional[str] = None
+    full_name: Optional[str] = None
+    assigned_at: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# FS-05: Notification Schemas
+# ---------------------------------------------------------------------------
+
+class NotificationItem(BaseModel):
+    id: str
+    user_id: str
+    type: str
+    title: str
+    message: str
+    data: Optional[dict[str, Any]] = None
+    read: bool = False
+    created_at: Optional[str] = None
