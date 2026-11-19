@@ -7,31 +7,34 @@ begin
 
   insert into events (organizer_id, title, description, category,
                       event_date, starts_at, ends_at, timezone,
-                      venue, venue_name, venue_address,
+                      venue, venue_name, venue_address, image_url,
                       status, visibility, capacity, paid_sales_status, paid_sales_active)
   values (v_org, 'Astana Tech Conference 2026', 'Конференция по IT и AI', 'Conference',
           now() + interval '14 days', now() + interval '14 days', now() + interval '14 days 8 hours', 'Asia/Almaty',
           'Astana IT Hub', 'Astana IT Hub', 'пр. Мангилик Ел, 55/8',
+          'https://images.unsplash.com/photo-1540575467063-178a50c2df87?auto=format&fit=crop&w=1200&q=80',
           'published', 'public', 300, 'ACTIVE', true)
   returning id into v_e1;
 
   insert into events (organizer_id, title, description, category,
                       event_date, starts_at, ends_at, timezone,
-                      venue, venue_name, venue_address,
+                      venue, venue_name, venue_address, image_url,
                       status, visibility, capacity, paid_sales_status, paid_sales_active)
   values (v_org, 'Jazz Night Almaty', 'Вечер живого джаза', 'Concert',
           now() + interval '21 days', now() + interval '21 days', now() + interval '21 days 3 hours', 'Asia/Almaty',
           'Kazakhconcert', 'Kazakhconcert', 'ул. Абылай хана, 83',
+          'https://images.unsplash.com/photo-1511192336575-5a79af67a629?auto=format&fit=crop&w=1200&q=80',
           'published', 'public', 150, 'ACTIVE', true)
   returning id into v_e2;
 
   insert into events (organizer_id, title, description, category,
                       event_date, starts_at, ends_at, timezone,
-                      venue, venue_name, venue_address,
+                      venue, venue_name, venue_address, image_url,
                       status, visibility, capacity)
   values (v_org, 'Open Startup Meetup', 'Бесплатный митап стартапов', 'Meetup',
           now() + interval '7 days', now() + interval '7 days', now() + interval '7 days 2 hours', 'Asia/Almaty',
           'NU Library', 'NU Library', 'пр. Кабанбай батыра, 53',
+          'https://images.unsplash.com/photo-1522071820081-009f0129c71c?auto=format&fit=crop&w=1200&q=80',
           'published', 'public', 80)
   returning id into v_e3;
 
