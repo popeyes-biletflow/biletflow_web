@@ -14,7 +14,7 @@ from routers.tickets import router as tickets_router
 from routers.support import router as support_router
 from routers.organizer import router as organizer_router
 from routers.admin import router as admin_router
-from crypto import generate_hmac_signature
+from crypto import generate_hmac_signature, ticket_qr_payload, qr_expiry_for_event
 
 from schemas import (
     UserAuthSchema,
@@ -56,6 +56,7 @@ from orders import FEE_PERCENT
 from routers.analytics import router as analytics_router
 from routers.event_history import router as event_history_router
 from routers.mobile import router as mobile_router
+from routers.my_orders import router as my_orders_router
 app.include_router(promo_router)
 app.include_router(analytics_router)
 app.include_router(event_history_router)
@@ -64,6 +65,7 @@ app.include_router(support_router)
 app.include_router(organizer_router)
 app.include_router(orders_router)
 app.include_router(mobile_router)
+app.include_router(my_orders_router)
 app.include_router(admin_router)
 
 
@@ -80,35 +82,9 @@ def db_for_user(token: str) -> Client:
     return client
 
 
-QR_GRACE_SECONDS = 24 * 3600
-QR_FALLBACK_SECONDS = 365 * 24 * 3600
-
-
-def qr_expiry_for_event(event: Optional[dict]) -> int:
-    """QR codes stay valid until 24h after the event ends (or starts).
-
-    Deriving the expiry from the event (instead of "now + 72h") keeps the
-    payload stable, so the same ticket re-downloaded later yields the same QR,
-    and a ticket bought weeks in advance is still scannable at the door.
-    """
-    import time
-    from datetime import datetime as _dt
-
-    raw = (event or {}).get("ends_at") or (event or {}).get("starts_at")
-    if raw:
-        try:
-            return int(_dt.fromisoformat(str(raw).replace("Z", "+00:00")).timestamp()) + QR_GRACE_SECONDS
-        except ValueError:
-            pass
-    return int(time.time()) + QR_FALLBACK_SECONDS
-
-
 def make_qr_payload(ticket_id: str, event_id: str, user_id: str, event: Optional[dict] = None) -> tuple[str, str]:
-    """Build the signed QR payload ``ticket_id:event_id:user_id:expires_at:signature``."""
-    expires_at = qr_expiry_for_event(event)
-    signature = generate_hmac_signature(ticket_id, event_id, user_id, expires_at)
-    qr_payload = f"{ticket_id}:{event_id}:{user_id}:{expires_at}:{signature}"
-    return qr_payload, signature
+    """Build the signed QR payload (shared helper in crypto.py)."""
+    return ticket_qr_payload(ticket_id, event_id, user_id, event)
 
 
 async def get_current_user(

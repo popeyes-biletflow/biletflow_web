@@ -7,6 +7,7 @@ export interface TicketTier {
   description: string;
   priceKZT: number;
   remaining: number | null;
+  maxPerOrder: number | null;
   saleStartsAt: string | null;
   saleEndsAt: string | null;
 }
@@ -59,6 +60,7 @@ export function normalizeEvent(r: Raw): EventItem {
       description: t.description ?? '',
       priceKZT: Number(t.price ?? t.price_kzt ?? 0),
       remaining: t.available ?? t.quantity ?? t.stock ?? null,
+      maxPerOrder: t.max_per_order ?? null,
       saleStartsAt: t.sale_starts_at ?? null,
       saleEndsAt: t.sale_ends_at ?? null,
     })),

@@ -27,43 +27,8 @@ export interface MyTicket {
   qr_payload: string | null;
 }
 
-export interface Quote {
-  ticket_type_id: string;
-  subtotal_kzt: number;
-  discount_kzt: number;
-  fee_kzt: number;
-  total_kzt: number;
-  promo_code: string | null;
-  discount_percent: number;
-  simulated: boolean;
-}
-
-export interface IssuedTicket {
-  id: string;
-  order_id: string;
-  ticket_type_id: string;
-  event_id: string;
-  status: string;
-  qr_payload: string;
-  pricing: Quote | null;
-}
-
 export const ticketsApi = {
   mine: (token: string) => http<MyTicket[]>('/api/me/tickets', {}, token),
-
-  quote: (token: string, eventId: string, ticketTypeId: string, promoCode?: string) =>
-    http<Quote>(
-      `/api/events/${eventId}/checkout/quote`,
-      { method: 'POST', body: JSON.stringify({ ticket_type_id: ticketTypeId, promo_code: promoCode || null }) },
-      token,
-    ),
-
-  register: (token: string, eventId: string, ticketTypeId: string, promoCode?: string) =>
-    http<IssuedTicket>(
-      `/api/events/${eventId}/register`,
-      { method: 'POST', body: JSON.stringify({ ticket_type_id: ticketTypeId, promo_code: promoCode || null }) },
-      token,
-    ),
 
   /** Cancellation / refund request = support case with category "refund" linked to the ticket (SRS 4.9, 4.13). */
   requestCancel: (token: string, ticket: MyTicket, reason: string) =>
@@ -80,6 +45,93 @@ export const ticketsApi = {
       },
       token,
     ),
+};
+
+// ---------- FS-17: checkout через холд ----------
+export interface Hold {
+  hold_id: string;
+  event_id: string;
+  ticket_type_id: string;
+  quantity: number;
+  subtotal_kzt: number;
+  discount_kzt: number;
+  discount_percent: number;
+  fee_kzt: number;
+  total_kzt: number;
+  hold_expires_at: string;
+}
+
+export interface AttendeeInput {
+  name: string;
+  email: string;
+}
+
+export type PaymentOutcome = 'approved' | 'declined';
+
+export interface OrderResult {
+  order_id: string;
+  status: string;
+  event_id: string;
+  replayed: boolean;
+  breakdown_kzt: { subtotal: number; discount: number; fee: number; total: number };
+  tickets: { ticket_id: string; attendee_name: string | null; qr_payload: string }[];
+}
+
+export interface MyOrderTicket {
+  id: string;
+  status: TicketStatus;
+  attendee_name: string | null;
+  seat: string | null;
+  checked_in_at: string | null;
+  refund_case_id: string | null;
+  qr_payload: string | null;
+}
+
+/** Row returned by GET /api/me/orders and /api/me/orders/{id} */
+export interface MyOrder {
+  id: string;
+  status: string;
+  created_at: string | null;
+  event: {
+    id: string;
+    title: string;
+    status: string | null;
+    starts_at: string | null;
+    ends_at: string | null;
+    timezone: string;
+    venue_name: string;
+    venue_address: string;
+  };
+  ticket_type: { id: string; name: string; price_kzt: number };
+  quantity: number;
+  breakdown_kzt: { subtotal: number; discount: number; fee: number; total: number };
+  promo_code: string | null;
+  simulated_payment: boolean;
+  tickets: MyOrderTicket[];
+}
+
+export const checkoutApi = {
+  /** Резервирует билеты на 15 минут, сервер считает цену и применяет промокод */
+  hold: (token: string, ticketTypeId: string, quantity: number, code?: string) =>
+    http<Hold>(
+      '/api/checkout/apply-promo',
+      { method: 'POST', body: JSON.stringify({ ticket_type_id: ticketTypeId, quantity, code: code || null }) },
+      token,
+    ),
+
+  release: (token: string, holdId: string) =>
+    http<{ released: boolean }>(`/api/checkout/holds/${holdId}/release`, { method: 'POST' }, token),
+
+  /** Повторный вызов с тем же hold_id возвращает тот же заказ (идемпотентно) */
+  confirm: (token: string, holdId: string, outcome: PaymentOutcome, attendees: AttendeeInput[]) =>
+    http<OrderResult>(
+      '/api/orders',
+      { method: 'POST', body: JSON.stringify({ hold_id: holdId, payment_outcome: outcome, attendees }) },
+      token,
+    ),
+
+  order: (token: string, orderId: string) => http<MyOrder>(`/api/me/orders/${orderId}`, {}, token),
+  orders: (token: string) => http<MyOrder[]>('/api/me/orders', {}, token),
 };
 
 const PROMO_KEY = 'campaign_promo';
