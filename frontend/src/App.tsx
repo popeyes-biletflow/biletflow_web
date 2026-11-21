@@ -13,6 +13,9 @@ import { EventDetailsPage } from './pages/EventDetailsPage';
 import { OrganizerDashboard } from './pages/OrganizerDashboard';
 import { EventManageRoute } from './pages/EventManagePage';
 import { TicketView } from './pages/TicketView';
+import { AuthCallbackPage, ForgotPasswordPage, ResetPasswordPage } from './pages/AuthPages';
+import { ProfilePage } from './pages/ProfilePage';
+import { RequireAuth } from './components/RequireAuth';
 import { getEvent, type EventItem } from './services/events';
 
 const navClass = ({ isActive }: { isActive: boolean }) =>
@@ -39,7 +42,7 @@ function EventPurchase() {
           <CheckoutModal isOpen={open} onClose={() => setOpen(false)} event={event} />
         </>
       ) : (
-        <Link to="/login" className="inline-block rounded-lg border border-emerald-600 px-6 py-3 font-semibold text-emerald-700 hover:bg-emerald-50">
+        <Link to={`/login?next=/events/${id}`} className="inline-block rounded-lg border border-emerald-600 px-6 py-3 font-semibold text-emerald-700 hover:bg-emerald-50">
           {t('nav.loginToBuy')}
         </Link>
       )}
@@ -70,8 +73,8 @@ function MainApp() {
             <>
               <NavLink to="/tickets" className={navClass}>{t('nav.tickets')}</NavLink>
               {user.role === 'organizer' && <NavLink to="/organizer" className={navClass}>{t('nav.organizer')}</NavLink>}
-              <span className="text-sm text-gray-600">{t('nav.hello', { name: user.name || user.email })}</span>
-              <button onClick={() => { logout(); navigate('/events'); }}
+              <NavLink to="/profile" className={navClass}>{t('nav.hello', { name: user.name || user.email })}</NavLink>
+              <button onClick={async () => { await logout(); navigate('/events'); }}
                 className="rounded-md border border-gray-300 px-3 py-1 text-sm font-medium hover:bg-gray-100">{t('nav.logout')}</button>
             </>
           ) : (
@@ -89,13 +92,17 @@ function MainApp() {
         <Route path="/events" element={<EventsPage />} />
         <Route path="/events/:id" element={<><EventDetailsPage /><EventPurchase /></>} />
         <Route path="/checkout" element={<CampaignLanding />} />
-        <Route path="/login" element={<LoginForm onSwitchToSignup={() => navigate('/signup')} onSuccess={() => navigate('/events')} />} />
-        <Route path="/signup" element={<SignupForm onSwitchToLogin={() => navigate('/login')} onSuccess={() => navigate('/login')} />} />
-        <Route path="/tickets" element={user ? <TicketDashboard /> : <Navigate to="/login" replace />} />
-        <Route path="/tickets/:ticketId" element={user ? <TicketView /> : <Navigate to="/login" replace />} />
-        <Route path="/organizer" element={user ? <OrganizerDashboard /> : <Navigate to="/login" replace />} />
-        <Route path="/organizer/events/new" element={user ? <EventManageRoute /> : <Navigate to="/login" replace />} />
-        <Route path="/organizer/events/:id" element={user ? <EventManageRoute /> : <Navigate to="/login" replace />} />
+        <Route path="/login" element={<LoginForm />} />
+        <Route path="/signup" element={<SignupForm />} />
+        <Route path="/auth/callback" element={<AuthCallbackPage />} />
+        <Route path="/auth/forgot" element={<ForgotPasswordPage />} />
+        <Route path="/auth/reset-password" element={<ResetPasswordPage />} />
+        <Route path="/profile" element={<RequireAuth><ProfilePage /></RequireAuth>} />
+        <Route path="/tickets" element={<RequireAuth><TicketDashboard /></RequireAuth>} />
+        <Route path="/tickets/:ticketId" element={<RequireAuth><TicketView /></RequireAuth>} />
+        <Route path="/organizer" element={<RequireAuth roles={['organizer']}><OrganizerDashboard /></RequireAuth>} />
+        <Route path="/organizer/events/new" element={<RequireAuth roles={['organizer']}><EventManageRoute /></RequireAuth>} />
+        <Route path="/organizer/events/:id" element={<RequireAuth roles={['organizer']}><EventManageRoute /></RequireAuth>} />
         <Route path="*" element={<main className="mx-auto max-w-4xl p-6"><h2 className="text-2xl font-bold">{t('nav.notFound')}</h2><Link to="/events" className="text-blue-600">{t('nav.toEvents')}</Link></main>} />
       </Routes>
     </div>

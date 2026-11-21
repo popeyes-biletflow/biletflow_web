@@ -18,6 +18,10 @@ from crypto import generate_hmac_signature
 
 from schemas import (
     UserAuthSchema,
+    SignupSchema,
+    RefreshRequestSchema,
+    ResendVerificationSchema,
+    PasswordResetConfirmSchema,
     SignupResponseSchema,
     AuthResponseSchema,
     PasswordResetRequestSchema,
@@ -670,96 +674,81 @@ async def update_organizer_ticket_type(
     return with_sold_available(response.data[0], sold)
 
 
-@app.post(
-    "/api/auth/signup",
-    response_model=SignupResponseSchema,
-    status_code=status.HTTP_201_CREATED
-)
-async def signup(credentials: UserAuthSchema):
-    """Registers a new user using Supabase Auth with verified certificates."""
-    url = f"{SUPABASE_URL}/auth/v1/signup"
-    headers = {
-        "apikey": SUPABASE_KEY,
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "email": credentials.email,
-        "password": credentials.password
-    }
+# ---------------------------------------------------------------------------
+# FS-16: регистрация, вход, подтверждение email, сброс пароля через Supabase Auth
+# ---------------------------------------------------------------------------
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173").rstrip("/")
 
+
+async def gotrue(method, path, body=None, token=None, params=None):
+    """Запрос к Supabase Auth (/auth/v1/...). Возвращает (код ответа, json)."""
+    headers = {"apikey": SUPABASE_KEY, "Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     try:
-        async with httpx.AsyncClient(verify=VERIFY_SSL) as client:
-            response = await client.post(url, json=payload, headers=headers)
+        async with httpx.AsyncClient(verify=VERIFY_SSL, timeout=15) as client:
+            response = await client.request(method, f"{SUPABASE_URL}/auth/v1{path}", json=body, headers=headers, params=params)
     except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Registration service unavailable: {sanitize_error(exc)}",
-        )
+        raise HTTPException(status_code=503, detail=f"Authentication service unavailable: {sanitize_error(exc)}")
+    try:
+        data = response.json()
+    except ValueError:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    return response.status_code, data
 
-    data = response.json()
 
-    if response.status_code != 200 or "error" in data:
-        error_msg = data.get("msg") or data.get("error_description") or "Registration failed."
-        raise HTTPException(
-            status_code=response.status_code if response.status_code != 200 else status.HTTP_400_BAD_REQUEST,
-            detail=error_msg
-        )
+def gotrue_error(data, default):
+    return data.get("msg") or data.get("error_description") or data.get("message") or default
 
-    user_data = data.get("user") or {}
-    user_id = data.get("id") or user_data.get("id")
-    if user_id is not None:
-        user_id = str(user_id)
 
-    verification_link = f"http://localhost:5173/auth/verify?token=demo-{user_id}&type=signup"
+@app.post("/api/auth/signup", response_model=SignupResponseSchema, status_code=status.HTTP_201_CREATED)
+async def signup(credentials: SignupSchema):
+    body = {"email": credentials.email.strip(), "password": credentials.password}
+    if credentials.full_name and credentials.full_name.strip():
+        body["data"] = {"full_name": credentials.full_name.strip()}
+
+    # письмо с подтверждением отправляет сам Supabase, ссылка вернёт на /auth/callback
+    code, data = await gotrue("POST", "/signup", body, params={"redirect_to": f"{FRONTEND_URL}/auth/callback"})
+    if code >= 400 or "error" in data:
+        raise HTTPException(status_code=code if code >= 400 else 400, detail=gotrue_error(data, "Registration failed."))
+
+    user = data.get("user") or data
+    user_id = user.get("id")
+    # если в Supabase выключено подтверждение email, сразу приходит access_token
+    need_confirm = not data.get("access_token") and not user.get("email_confirmed_at")
 
     return SignupResponseSchema(
-        message="User registered successfully. Check email if verification is required.",
-        user_id=user_id,
-        verification_link=verification_link,
+        message="Check your inbox to confirm your email." if need_confirm else "Account created.",
+        user_id=str(user_id) if user_id else None,
+        verification_link=None,
+        email_confirmation_required=need_confirm,
     )
 
 
 @app.post("/api/auth/login", response_model=AuthResponseSchema)
 async def login(credentials: UserAuthSchema):
-    """Authenticates a user and returns JWT tokens."""
-    url = f"{SUPABASE_URL}/auth/v1/token?grant_type=password"
-    headers = {
-        "apikey": SUPABASE_KEY,
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "email": credentials.email,
-        "password": credentials.password
-    }
+    code, data = await gotrue(
+        "POST", "/token",
+        {"email": credentials.email.strip(), "password": credentials.password},
+        params={"grant_type": "password"},
+    )
 
-    try:
-        async with httpx.AsyncClient(verify=VERIFY_SSL) as client:
-            response = await client.post(url, json=payload, headers=headers)
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Authentication service unavailable: {sanitize_error(exc)}",
-        )
-
-    data = response.json()
-
-    if response.status_code != 200 or "access_token" not in data:
-        error_msg = data.get("error_description") or "Invalid email or password."
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=error_msg
-        )
+    # при ошибке токены не отдаём вообще
+    if code != 200 or "access_token" not in data:
+        text = gotrue_error(data, "").lower()
+        if "not confirmed" in text or "email_not_confirmed" in (data.get("error_code"), data.get("code")):
+            raise HTTPException(status_code=403, detail="EMAIL_NOT_CONFIRMED")
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
 
     user_id = str(data["user"]["id"])
 
-    # Check for account suspension
+    # заблокированного пользователя не пускаем
     try:
         prof = supabase.table("profiles").select("is_suspended").eq("id", user_id).execute()
         if prof.data and prof.data[0].get("is_suspended"):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Your account has been suspended by an administrator.",
-            )
+            raise HTTPException(status_code=403, detail="Your account has been suspended by an administrator.")
     except HTTPException:
         raise
     except Exception:
@@ -769,38 +758,77 @@ async def login(credentials: UserAuthSchema):
         access_token=data["access_token"],
         refresh_token=data["refresh_token"],
         user_id=user_id,
-        email=data["user"]["email"]
+        email=data["user"]["email"],
+        expires_in=data.get("expires_in"),
+    )
+
+
+@app.post("/api/auth/refresh", response_model=AuthResponseSchema)
+async def refresh_session(payload: RefreshRequestSchema):
+    # access token живёт час, потом фронт меняет refresh token на новый
+    code, data = await gotrue("POST", "/token", {"refresh_token": payload.refresh_token}, params={"grant_type": "refresh_token"})
+    if code != 200 or "access_token" not in data:
+        raise HTTPException(status_code=401, detail="Session expired. Please sign in again.")
+    return AuthResponseSchema(
+        access_token=data["access_token"],
+        refresh_token=data["refresh_token"],
+        user_id=str(data["user"]["id"]),
+        email=data["user"]["email"],
+        expires_in=data.get("expires_in"),
     )
 
 
 @app.post("/api/auth/logout", response_model=LogoutResponseSchema)
 async def logout(current_user: CurrentUser = Depends(get_current_user)):
-    """Sign out the current user and revoke their session."""
+    # отзываем сессию, чтобы refresh token больше не работал
+    await gotrue("POST", "/logout", token=current_user.access_token)
     return LogoutResponseSchema(message="Successfully signed out.")
+
+
+@app.post("/api/auth/resend-verification", response_model=PasswordResetResponseSchema)
+async def resend_verification(payload: ResendVerificationSchema):
+    await gotrue("POST", "/resend", {"type": "signup", "email": payload.email.strip()},
+                 params={"redirect_to": f"{FRONTEND_URL}/auth/callback"})
+    return PasswordResetResponseSchema(message="If the account exists and is not confirmed yet, a new email was sent.")
 
 
 @app.post("/api/auth/reset-password", response_model=PasswordResetResponseSchema)
 @app.post("/api/auth/recover", response_model=PasswordResetResponseSchema)
 async def request_password_reset(payload: PasswordResetRequestSchema):
-    """Initiate password reset workflow."""
     email = payload.email.strip().lower()
-    reset_link = f"http://localhost:5173/auth/reset-password?email={email}&token=demo-reset-token"
-    return PasswordResetResponseSchema(
-        message="Password reset instructions sent. Please check your mailbox.",
-        reset_link=reset_link,
-    )
+    code, data = await gotrue("POST", "/recover", {"email": email},
+                              params={"redirect_to": f"{FRONTEND_URL}/auth/reset-password"})
+    if code == 429:
+        raise HTTPException(status_code=429, detail=gotrue_error(data, "Too many requests. Try again later."))
+    # одинаковый ответ, есть такой email или нет (чтобы нельзя было проверять чужие адреса)
+    return PasswordResetResponseSchema(message="If an account exists for this email, a reset link was sent.", reset_link=None)
+
+
+@app.post("/api/auth/reset-password/confirm", response_model=PasswordResetResponseSchema)
+async def confirm_password_reset(payload: PasswordResetConfirmSchema):
+    if len(payload.new_password) < 6:
+        raise HTTPException(status_code=422, detail="Password must be at least 6 characters.")
+    # token — это access_token из ссылки восстановления
+    code, data = await gotrue("PUT", "/user", {"password": payload.new_password}, token=payload.token)
+    if code in (401, 403):
+        raise HTTPException(status_code=401, detail="The reset link is invalid or has expired.")
+    if code != 200:
+        raise HTTPException(status_code=400, detail=gotrue_error(data, "Could not update the password."))
+    return PasswordResetResponseSchema(message="Password updated. You can sign in now.")
 
 
 @app.get("/api/auth/verify", response_model=VerifyEmailResponseSchema)
 @app.post("/api/auth/verify", response_model=VerifyEmailResponseSchema)
-async def verify_auth_token(
-    token: Optional[str] = Query(None),
-    type: Optional[str] = Query(None),
-):
-    """Verify signup or password reset confirmation link."""
+async def verify_auth_token(token: Optional[str] = Query(None), type: Optional[str] = Query(None)):
+    if not token:
+        raise HTTPException(status_code=400, detail="Missing verification token.")
+    code, data = await gotrue("GET", "/user", token=token)
+    if code != 200:
+        raise HTTPException(status_code=401, detail="The verification link is invalid or has expired.")
+    confirmed = bool(data.get("email_confirmed_at") or data.get("confirmed_at"))
     return VerifyEmailResponseSchema(
-        message="Verification link successfully processed.",
-        verified=True,
+        message="Email confirmed." if confirmed else "Email is not confirmed yet.",
+        verified=confirmed,
     )
 
 

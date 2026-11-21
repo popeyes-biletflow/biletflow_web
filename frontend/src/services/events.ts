@@ -104,6 +104,8 @@ export async function http<T>(path: string, init: RequestInit = {}, token?: stri
     },
   });
   if (res.status === 204) return undefined as T;
+  // токен истёк или отозван — AuthContext попробует обновить сессию или разлогинит
+  if (res.status === 401 && token) window.dispatchEvent(new CustomEvent('auth:unauthorized'));
   const data = await res.json().catch(() => null);
   if (!res.ok) throw new HttpError(errorMessage(data?.detail) ?? `Request failed (${res.status})`, res.status, data?.detail);
   return data as T;

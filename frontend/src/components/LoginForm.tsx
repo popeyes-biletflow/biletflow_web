@@ -1,24 +1,30 @@
 import { useState } from 'react';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '../context/AuthContext';
-import { ApiError, login as apiLogin } from '../services/api';
+import { ApiError, login as apiLogin, resendVerification } from '../services/api';
+import { AuthCard, Field } from './AuthCard';
 
-interface Props {
-  onSwitchToSignup: () => void;
-  onSuccess?: () => void;
-}
-
-export function LoginForm({ onSwitchToSignup, onSuccess }: Props) {
+export function LoginForm() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [notConfirmed, setNotConfirmed] = useState(false);
+  const [notice, setNotice] = useState('');
   const [loading, setLoading] = useState(false);
-  const { login } = useAuth();
+  const { login, sessionExpired } = useAuth();
   const { t } = useTranslation();
+  const navigate = useNavigate();
+  const [params] = useSearchParams();
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  // после входа возвращаем туда, откуда пришли
+  let next = params.get('next') || '/events';
+  if (!next.startsWith('/')) next = '/events';
+
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-
+    setNotice('');
+    setNotConfirmed(false);
     if (!email || !password) {
       setError(t('auth.fillAll'));
       return;
@@ -26,70 +32,59 @@ export function LoginForm({ onSwitchToSignup, onSuccess }: Props) {
 
     setError('');
     setLoading(true);
-
     try {
-      const data = await apiLogin({ email, password });
-      login(data.email, data.access_token, { id: data.user_id });
-      if (onSuccess) onSuccess();
+      const data = await apiLogin(email, password);
+      login(data); // сессию сохраняем только если вход успешный
+      navigate(next, { replace: true });
     } catch (err) {
-      setError(err instanceof ApiError || err instanceof Error ? err.message : t('auth.loginFailed'));
-    } finally {
-      setLoading(false);
+      if (err instanceof ApiError && err.message === 'EMAIL_NOT_CONFIRMED') {
+        setNotConfirmed(true);
+        setError(t('auth.errors.notConfirmed'));
+      } else if (err instanceof ApiError && err.status === 401) {
+        setError(t('auth.errors.badCredentials'));
+      } else if (err instanceof ApiError && err.status === 403) {
+        setError(t('auth.errors.suspended'));
+      } else {
+        setError(t('auth.errors.service'));
+      }
     }
-  };
+    setLoading(false);
+  }
+
+  async function resend() {
+    try {
+      await resendVerification(email);
+      setNotice(t('auth.verificationResent'));
+    } catch {
+      setError(t('auth.errors.service'));
+    }
+  }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gray-100 p-4">
-      <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-md">
-        <h2 className="mb-6 text-center text-2xl font-bold text-gray-800">
-          {t('auth.loginTitle')}
-        </h2>
+    <AuthCard title={t('auth.loginTitle')}>
+      {sessionExpired && !error && <p className="mb-4 rounded bg-amber-50 p-2 text-center text-sm text-amber-800">{t('auth.sessionExpired')}</p>}
+      {error && <p role="alert" className="mb-4 rounded bg-red-100 p-2 text-center text-sm text-red-700">{error}</p>}
+      {notice && <p className="mb-4 rounded bg-emerald-100 p-2 text-center text-sm text-emerald-800">{notice}</p>}
+      {notConfirmed && (
+        <button onClick={resend} className="mb-4 w-full rounded-md border border-blue-600 py-2 text-sm text-blue-700">
+          {t('auth.resendVerification')}
+        </button>
+      )}
 
-        {error && (
-          <div className="mb-4 rounded bg-red-100 p-2 text-center text-sm text-red-600">
-            {error}
-          </div>
-        )}
-
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label className="mb-1 block text-sm font-medium text-gray-700">Email</label>
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="example@mail.com"
-              className="w-full rounded-md border border-gray-300 p-2 text-sm focus:border-blue-500 focus:outline-none"
-            />
-          </div>
-
-          <div>
-            <label className="mb-1 block text-sm font-medium text-gray-700">{t('auth.password')}</label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="••••••••"
-              className="w-full rounded-md border border-gray-300 p-2 text-sm focus:border-blue-500 focus:outline-none"
-            />
-          </div>
-
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full rounded-md bg-blue-600 py-2 font-medium text-white transition hover:bg-blue-700 disabled:opacity-50"
-          >
-            {loading ? t('auth.loggingIn') : t('auth.login')}
-          </button>
-        </form>
-
-        <div className="mt-4 text-center text-sm text-gray-600">
-          <span>{t('auth.noAccount')} </span>
-          <button onClick={onSwitchToSignup} className="font-semibold text-blue-600 hover:underline">
-            {t('auth.signup')}
-          </button>
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <Field id="login-email" label={t('auth.email')} type="email" value={email} onChange={setEmail} />
+        <Field id="login-password" label={t('auth.password')} type="password" value={password} onChange={setPassword} />
+        <div className="text-right text-sm">
+          <Link to="/auth/forgot" className="text-blue-600 hover:underline">{t('auth.forgot')}</Link>
         </div>
-      </div>
-    </div>
+        <button type="submit" disabled={loading} className="w-full rounded-md bg-blue-600 py-2 font-medium text-white hover:bg-blue-700 disabled:opacity-50">
+          {loading ? t('auth.loggingIn') : t('auth.login')}
+        </button>
+      </form>
+
+      <p className="mt-4 text-center text-sm text-gray-600">
+        {t('auth.noAccount')} <Link to="/signup" className="font-semibold text-blue-600">{t('auth.signup')}</Link>
+      </p>
+    </AuthCard>
   );
 }

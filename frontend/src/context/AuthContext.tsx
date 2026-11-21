@@ -1,85 +1,147 @@
-import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useState } from 'react';
 import { http } from '../services/events';
+import { logoutSession, refreshSession, type AuthResponse } from '../services/api';
 import { PENDING_NAME_KEY, readStored, writeStored } from '../services/session';
 
 export interface User {
   id?: string;
   name?: string;
   email: string;
-  role?: 'attendee' | 'organizer' | 'event_admin' | 'platform_admin' | string;
+  role?: string;
+  phone?: string | null;
+  payoutInfo?: string | null;
 }
 
-interface Profile {
+export interface Profile {
   id: string;
   email: string;
   full_name?: string | null;
+  phone_number?: string | null;
+  payout_info?: string | null;
   role?: string | null;
 }
 
 interface AuthContextType {
   user: User | null;
   token: string | null;
-  login: (email: string, token: string, userDetails?: Partial<User>) => void;
-  logout: () => void;
-  refreshProfile: () => Promise<void>;
+  profileLoaded: boolean;
+  sessionExpired: boolean;
+  login: (session: AuthResponse) => void;
+  logout: () => Promise<void>;
+  applyProfile: (p: Profile) => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-const read = readStored;
-const write = writeStored;
+function loadUser(): User | null {
+  const saved = readStored('auth_user');
+  if (!saved || !readStored('auth_token')) return null;
+  try {
+    return JSON.parse(saved);
+  } catch {
+    return null;
+  }
+}
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [token, setToken] = useState<string | null>(read('auth_token'));
-  const [user, setUser] = useState<User | null>(() => {
-    const saved = read('auth_user');
-    if (!saved || !read('auth_token')) return null;
-    try { return JSON.parse(saved) as User; } catch { return null; }
-  });
+  const [token, setToken] = useState<string | null>(readStored('auth_token'));
+  const [user, setUser] = useState<User | null>(loadUser());
+  const [profileLoaded, setProfileLoaded] = useState(false);
+  const [sessionExpired, setSessionExpired] = useState(false);
 
-  const saveUser = (u: User | null) => {
+  function saveUser(u: User | null) {
     setUser(u);
-    write('auth_user', u ? JSON.stringify(u) : null);
-  };
+    writeStored('auth_user', u ? JSON.stringify(u) : null);
+  }
 
-  const logout = useCallback(() => {
+  function clearSession() {
     setToken(null);
     saveUser(null);
-    write('auth_token', null);
+    setProfileLoaded(false);
+    writeStored('auth_token', null);
+    writeStored('auth_refresh_token', null);
+  }
+
+  function applyProfile(p: Profile) {
+    saveUser({
+      id: p.id,
+      email: p.email,
+      name: p.full_name || p.email.split('@')[0],
+      role: p.role || 'attendee',
+      phone: p.phone_number,
+      payoutInfo: p.payout_info,
+    });
+    setProfileLoaded(true);
+  }
+
+  // при каждом новом токене берём профиль с сервера (оттуда роль)
+  useEffect(() => {
+    if (!token) return;
+    async function loadProfile() {
+      try {
+        let p = await http<Profile>('/api/users/me', {}, token);
+        // имя, которое ввели при регистрации, сохраняем при первом входе
+        const pendingName = readStored(PENDING_NAME_KEY);
+        if (pendingName && !p.full_name) {
+          p = await http<Profile>('/api/users/me', { method: 'PATCH', body: JSON.stringify({ full_name: pendingName }) }, token);
+        }
+        writeStored(PENDING_NAME_KEY, null);
+        applyProfile(p);
+      } catch {
+        // если 401 — обработает слушатель ниже
+      }
+    }
+    loadProfile();
+  }, [token]);
+
+  // http() кидает событие auth:unauthorized при 401.
+  // Пробуем один раз обновить токен, если не получилось — выходим.
+  useEffect(() => {
+    let refreshing = false;
+    async function onUnauthorized() {
+      if (refreshing || !readStored('auth_token')) return;
+      refreshing = true;
+      const rt = readStored('auth_refresh_token');
+      try {
+        if (!rt) throw new Error('no refresh token');
+        const s = await refreshSession(rt);
+        writeStored('auth_token', s.access_token);
+        writeStored('auth_refresh_token', s.refresh_token);
+        setToken(s.access_token);
+      } catch {
+        clearSession();
+        setSessionExpired(true);
+      }
+      refreshing = false;
+    }
+    window.addEventListener('auth:unauthorized', onUnauthorized);
+    return () => window.removeEventListener('auth:unauthorized', onUnauthorized);
   }, []);
 
-  // Pull id / role / full_name from the backend so role-based UI (organizer dashboard) works.
-  const refreshProfile = useCallback(async () => {
-    if (!token) return;
-    try {
-      let profile = await http<Profile>('/api/users/me', {}, token);
-      const pendingName = read(PENDING_NAME_KEY);
-      if (pendingName && !profile.full_name) {
-        profile = await http<Profile>('/api/users/me', { method: 'PUT', body: JSON.stringify({ full_name: pendingName }) }, token);
+  function login(session: AuthResponse) {
+    writeStored('auth_token', session.access_token);
+    writeStored('auth_refresh_token', session.refresh_token);
+    setSessionExpired(false);
+    setProfileLoaded(false);
+    setToken(session.access_token);
+    saveUser({ email: session.email, name: session.email.split('@')[0], id: session.user_id });
+  }
+
+  async function logout() {
+    const old = token;
+    clearSession();
+    setSessionExpired(false);
+    if (old) {
+      try {
+        await logoutSession(old); // отзываем сессию в Supabase
+      } catch {
+        // локально уже вышли, этого хватит
       }
-      write(PENDING_NAME_KEY, null);
-      saveUser({
-        id: profile.id,
-        email: profile.email,
-        name: profile.full_name || profile.email.split('@')[0],
-        role: profile.role || 'attendee',
-      });
-    } catch (e) {
-      // Expired / invalid token → sign out instead of pretending to be logged in.
-      if ((e as Error).message.toLowerCase().includes('token') || (e as Error).message.includes('401')) logout();
     }
-  }, [token, logout]);
-
-  useEffect(() => { void refreshProfile(); }, [refreshProfile]);
-
-  const login = (email: string, authToken: string, userDetails?: Partial<User>) => {
-    setToken(authToken);
-    write('auth_token', authToken);
-    saveUser({ email, name: userDetails?.name || email.split('@')[0], id: userDetails?.id, role: userDetails?.role });
-  };
+  }
 
   return (
-    <AuthContext.Provider value={{ user, token, login, logout, refreshProfile }}>
+    <AuthContext.Provider value={{ user, token, profileLoaded, sessionExpired, login, logout, applyProfile }}>
       {children}
     </AuthContext.Provider>
   );
