@@ -21,7 +21,12 @@ export interface TicketDetails {
 interface Props {
   ticket: TicketDetails;
   onClose: () => void;
+  /** FS-18: скачать A4 PDF, собранный сервером */
+  onDownload?: () => void;
+  downloading?: boolean;
 }
+
+const INVALID = ['REFUNDED', 'CANCELLED', 'USED'];
 
 /**
  * Print-optimised A4 ticket (SRS 4.7 / UC7).
@@ -29,16 +34,25 @@ interface Props {
  * The QR is pure black on white with a quiet zone so it scans from a grayscale print.
  * Rendered in a portal so `@media print` can hide the rest of the app (see index.css).
  */
-export const TicketPDF: React.FC<Props> = ({ ticket, onClose }) => {
+export const TicketPDF: React.FC<Props> = ({ ticket, onClose, onDownload, downloading }) => {
   const { t } = useTranslation();
+  const invalid = ticket.status ? INVALID.includes(ticket.status) : false;
   return createPortal(
     <div className="ticket-print-root fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/60 p-4 sm:items-center sm:p-6 print:static print:overflow-visible print:bg-white print:p-0">
       <div className="relative my-auto flex w-full max-w-2xl flex-col items-center print:w-full print:max-w-none">
         <div className="sticky top-2 z-10 mb-4 flex gap-3 rounded-xl bg-gray-900/80 p-2.5 shadow-lg backdrop-blur-md print:hidden">
+          {onDownload && (
+            <button
+              onClick={onDownload}
+              disabled={downloading}
+              className="rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow transition hover:bg-blue-700 disabled:opacity-50"
+            >
+              {downloading ? t('common.loading') : t('ticket.downloadPdf')}
+            </button>
+          )}
           <button
             onClick={() => window.print()}
-            disabled={!ticket.qrPayload}
-            className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow transition hover:bg-emerald-700 disabled:opacity-50"
+            className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow transition hover:bg-emerald-700"
           >
             {t('ticket.print')}
           </button>
@@ -52,6 +66,11 @@ export const TicketPDF: React.FC<Props> = ({ ticket, onClose }) => {
 
         <div className="w-full rounded-2xl bg-white p-6 text-gray-900 shadow-2xl sm:p-8 print:min-h-0 print:w-[190mm] print:rounded-none print:p-0 print:shadow-none">
           <div className="border-4 border-dashed border-gray-300 p-6 sm:p-8 print:border-gray-500">
+            {invalid && (
+              <p role="alert" className="mb-6 rounded-lg border-2 border-red-600 p-3 text-center font-bold uppercase text-red-700 print:border-black print:text-black">
+                {t('ticket.invalidBanner', { status: t(`orders.status.${ticket.status}`) })}
+              </p>
+            )}
             <div className="mb-6 flex items-center justify-between border-b pb-6">
               <div>
                 <h1 className="text-2xl font-extrabold text-blue-600 sm:text-3xl print:text-black">BILETFLOW</h1>

@@ -1074,93 +1074,17 @@ async def register_for_event(
     )
 
 
-def attendee_ticket_status(ticket: dict, event: dict, refund_case: Optional[dict]) -> str:
-    """Map DB ticket status + event state + open refund request to the dashboard status."""
-    raw = (ticket.get("status") or "").lower()
-    if raw == "refunded":
-        return "REFUNDED"
-    if raw == "cancelled" or event.get("status") == "cancelled":
-        return "CANCELLED"
-    if raw in ("checked_in", "used"):
-        return "USED"
-    if refund_case and refund_case.get("status") != "RESOLVED":
-        return "CANCEL_PENDING"
-    return "ACTIVE"
-
-
 @app.get("/api/me/tickets")
 async def my_tickets(current_user: CurrentUser = Depends(get_current_user)):
-    """All tickets of the signed-in attendee with event, pricing and a signed QR payload."""
+    """All tickets of the signed-in attendee (FS-18: same data as /api/me/orders, flattened)."""
+    from routers.my_orders import flat_tickets, load_orders
+
     db = db_for_user(current_user.access_token)
     try:
-        tickets = db.table("tickets").select("*").eq("user_id", current_user.id).execute().data or []
-        if not tickets:
-            return []
-        event_ids = list({str(t["event_id"]) for t in tickets})
-        type_ids = list({str(t["ticket_type_id"]) for t in tickets if t.get("ticket_type_id")})
-        order_ids = list({str(t["order_id"]) for t in tickets if t.get("order_id")})
-        ticket_ids = [str(t["id"]) for t in tickets]
-        events = {str(e["id"]): e for e in db.table("events").select("*").in_("id", event_ids).execute().data or []}
-        types = (
-            {str(t["id"]): t for t in db.table("ticket_types").select("*").in_("id", type_ids).execute().data or []}
-            if type_ids else {}
-        )
-        orders = (
-            {str(o["id"]): o for o in db.table("orders").select("*").in_("id", order_ids).execute().data or []}
-            if order_ids else {}
-        )
-        cases = (
-            db.table("support_cases")
-            .select("id, ticket_id, status, created_at")
-            .eq("requester_id", current_user.id)
-            .eq("category", "refund")
-            .in_("ticket_id", ticket_ids)
-            .execute()
-            .data
-            or []
-        )
+        orders = load_orders(db, current_user)
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
-
-    latest_case: dict[str, dict] = {}
-    for c in sorted(cases, key=lambda c: str(c.get("created_at") or "")):
-        latest_case[str(c["ticket_id"])] = c
-
-    result = []
-    for t in tickets:
-        tid = str(t["id"])
-        event = events.get(str(t["event_id"]), {})
-        ttype = types.get(str(t.get("ticket_type_id")), {})
-        order = orders.get(str(t.get("order_id")), {})
-        case = latest_case.get(tid)
-        state = attendee_ticket_status(t, event, case)
-        price = int(ttype.get("price") or 0)
-        subtotal = order.get("subtotal_amount")
-        total = order.get("total_amount")
-        usable = state in ("ACTIVE", "CANCEL_PENDING")
-        result.append({
-            "id": tid,
-            "order_id": str(t.get("order_id") or ""),
-            "event_id": str(t["event_id"]),
-            "event_title": event.get("title") or "—",
-            "starts_at": event.get("starts_at"),
-            "ends_at": event.get("ends_at"),
-            "timezone": event.get("timezone") or "Asia/Almaty",
-            "venue_name": event.get("venue_name") or "",
-            "venue_address": event.get("venue_address") or "",
-            "ticket_type": ttype.get("name") or "—",
-            "subtotal_kzt": int(subtotal if subtotal is not None else price),
-            "discount_kzt": int(order.get("discount_amount") or 0),
-            "fee_kzt": int(order.get("fee_amount") or 0),
-            "total_kzt": int(total if total is not None else price),
-            "promo_code": order.get("promo_code"),
-            "purchased_at": order.get("created_at"),
-            "status": state,
-            "refund_case_id": str(case["id"]) if case else None,
-            "checked_in_at": t.get("checked_in_at"),
-            # A QR is only handed out for tickets that can still be used for admission.
-            "qr_payload": make_qr_payload(tid, str(t["event_id"]), current_user.id, event)[0] if usable else None,
-        })
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=sanitize_error(e))
+    result = flat_tickets(orders, current_user)
     result.sort(key=lambda r: str(r.get("starts_at") or ""), reverse=True)
     return result
 
