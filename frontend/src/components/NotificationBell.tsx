@@ -2,6 +2,14 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useNotifications } from '../context/NotificationsContext';
+import type { Notification } from '../services/support';
+
+// куда ведёт уведомление: обращение, или заказ / событие (data.url приходит с бэкенда)
+function linkFor(n: Notification) {
+  if (n.data?.case_id) return '/support/' + n.data.case_id;
+  if (typeof n.data?.url === 'string' && n.data.url.startsWith('/')) return n.data.url;
+  return '/support';
+}
 
 // колокольчик в шапке: сколько непрочитанных + последние уведомления
 export function NotificationBell() {
@@ -28,7 +36,7 @@ export function NotificationBell() {
           <ul className="max-h-80 overflow-y-auto">
             {items.slice(0, 15).map((n) => (
               <li key={n.id}>
-                <Link to={n.data?.case_id ? '/support/' + n.data.case_id : '/support'}
+                <Link to={linkFor(n)}
                   onClick={() => { markRead(n.id); setOpen(false); }}
                   className="block rounded-lg px-2 py-2 hover:bg-gray-50">
                   <p className={n.read ? 'text-sm text-gray-600' : 'text-sm font-semibold'}>{n.title}</p>

@@ -8,9 +8,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+import notify
 from crypto import ticket_qr_payload
 from deps import db_for_user, get_current_user
 from promo import call_rpc, require_organizer
@@ -34,6 +35,14 @@ class OrderIn(BaseModel):
     # исход демо-оплаты выбирается явно, номер карты не собираем
     payment_outcome: Literal["approved", "declined"] = "approved"
     attendees: list[AttendeeIn] = Field(default_factory=list, max_length=10)
+
+
+def email_lang(request):
+    # язык письма берём из заголовка браузера
+    lang = (request.headers.get("accept-language") or "")[:2].lower()
+    if lang in ("ru", "kk", "en"):
+        return lang
+    return notify.EMAIL_LANG
 
 
 def mock_charge(outcome, total_kzt, currency):
@@ -89,7 +98,7 @@ def order_response(db, order, event, user_id, payment, replayed):
 
 
 @router.post("/api/orders", status_code=201)
-async def create_order(body: OrderIn, user: CurrentUser = Depends(get_current_user)):
+async def create_order(body: OrderIn, request: Request, user: CurrentUser = Depends(get_current_user)):
     db = db_for_user(user.access_token)
 
     res = db.table("ticket_holds").select("*").eq("id", body.hold_id).eq("user_id", user.id).execute()
@@ -97,7 +106,7 @@ async def create_order(body: OrderIn, user: CurrentUser = Depends(get_current_us
         raise HTTPException(404, "HOLD_NOT_FOUND")
     hold = res.data[0]
 
-    ev = db.table("events").select("id,starts_at,ends_at").eq("id", hold["event_id"]).execute()
+    ev = db.table("events").select("*").eq("id", hold["event_id"]).execute()
     event = ev.data[0] if ev.data else {}
 
     # двойной клик или повтор после обрыва — отдаём уже созданный заказ
@@ -112,7 +121,14 @@ async def create_order(body: OrderIn, user: CurrentUser = Depends(get_current_us
     rate, dec, minor = convert(total, body.currency)
     payment = mock_charge(body.payment_outcome, total, body.currency)
     if payment["status"] == "declined":
-        # холд не трогаем, можно попробовать ещё раз
+        # холд не трогаем, можно попробовать ещё раз. Письмо об ошибке оплаты — один раз на холд
+        try:
+            ctx = notify.event_ctx(event)
+            ctx["hold_until"] = str(hold.get("expires_at") or "")[11:16]
+            ctx["path"] = f"/events/{hold['event_id']}"
+            notify.notify("PAYMENT_FAILED", user.id, ctx, f"hold:{body.hold_id}:declined", email=user.email, lang=email_lang(request))
+        except Exception:
+            pass
         raise HTTPException(402, {"code": "PAYMENT_DECLINED", **payment})
 
     tickets_db = []
@@ -146,7 +162,22 @@ async def create_order(body: OrderIn, user: CurrentUser = Depends(get_current_us
         "total_amount": total,
         "currency": body.currency,
     }
-    return order_response(db, order, event, user.id, payment, replayed=False)
+    response = order_response(db, order, event, user.id, payment, replayed=False)
+
+    # письмо с билетами. Если почта упала — заказ остаётся, письмо уйдёт при ретрае.
+    # При повторном запросе второе письмо не придёт (dedupe по order_id)
+    try:
+        emails = {}
+        for t in tickets_db:
+            emails[t["id"]] = t["attendee_email"]
+        tickets_for_mail = []
+        for t in response["tickets"]:
+            tickets_for_mail.append({**t, "attendee_email": emails.get(t["ticket_id"])})
+        notify.notify_order_confirmed(order, event, user.id, user.email, user.full_name or user.email,
+                                      tickets_for_mail, lang=email_lang(request))
+    except Exception:
+        pass
+    return response
 
 
 @router.post("/api/checkout/holds/{hold_id}/release")

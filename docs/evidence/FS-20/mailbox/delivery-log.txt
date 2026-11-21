@@ -1,0 +1,23 @@
+== free registration (kk)
+DELIVERED to=buyer@example.com subject=Сіз тіркелдіңіз: Demo Fest
+POST /api/orders -> 201 order=d1557b1f tickets=['713c42ca']
+== paid purchase (ru), then the same request again
+DELIVERED to=buyer@example.com subject=Заказ оплачен: Demo Fest
+DELIVERED to=friend@example.com subject=Ваш билет на «Demo Fest»
+first  -> 201 order=99b5fe23 replayed=False
+second -> 201 order=99b5fe23 replayed=True
+outbox rows=2 in-app rows=1
+== declined payment (en)
+DELIVERED to=buyer@example.com subject=Payment failed: Demo Fest
+POST /api/orders -> 402 PAYMENT_DECLINED
+== support reply from organizer
+DELIVERED to=buyer@example.com subject=BiletFlow поддержка: Support reply: Refund
+POST /api/support/cases/case-1/messages -> 201
+== event cancelled
+DELIVERED to=buyer@example.com subject=Событие отменено: Demo Fest
+holders notified=1
+== SMTP outage, then retry
+order while SMTP down -> 201, tickets issued=2, outbox status=failed attempts=1
+DELIVERED to=buyer@example.com subject=Заказ оплачен: Demo Fest
+retry_pending -> {'sent': 1, 'failed': 0, 'skipped': 0}
+retry_pending again -> {'sent': 0, 'failed': 0, 'skipped': 0}
