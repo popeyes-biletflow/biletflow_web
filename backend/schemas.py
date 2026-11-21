@@ -19,11 +19,17 @@ class UserAuthSchema(BaseModel):
     password: str
 
 
+class SignupSchema(UserAuthSchema):
+    """Signup also takes the display name, stored in the auth user metadata."""
+    full_name: Optional[str] = None
+
+
 class SignupResponseSchema(BaseModel):
     """Schema for signup response."""
     message: str
     user_id: Optional[str] = None
     verification_link: Optional[str] = None
+    email_confirmation_required: bool = True
 
 
 class AuthResponseSchema(BaseModel):
@@ -31,6 +37,15 @@ class AuthResponseSchema(BaseModel):
     access_token: str
     refresh_token: str
     user_id: str
+    email: str
+    expires_in: Optional[int] = None
+
+
+class RefreshRequestSchema(BaseModel):
+    refresh_token: str
+
+
+class ResendVerificationSchema(BaseModel):
     email: str
 
 

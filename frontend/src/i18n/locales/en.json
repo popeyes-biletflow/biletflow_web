@@ -10,7 +10,9 @@
     "notFound": "Page not found",
     "toEvents": "Go to events",
     "organizer": "Organizer",
-    "loginToBuy": "Sign in to get a ticket"
+    "loginToBuy": "Sign in to get a ticket",
+    "noAccess": "No access",
+    "noAccessHint": "This section is not available for the “{{role}}” role."
   },
   "discovery": {
     "title": "Discover events",
@@ -481,6 +483,52 @@
     "signup": "Sign up",
     "signingUp": "Signing up...",
     "noAccount": "Don't have an account?",
-    "haveAccount": "Already have an account?"
+    "haveAccount": "Already have an account?",
+    "email": "Email",
+    "forgot": "Forgot password?",
+    "forgotTitle": "Reset password",
+    "forgotHint": "Enter your account email and we will send you a link to set a new password.",
+    "sendResetLink": "Send link",
+    "resetSent": "If an account with {{email}} exists, a reset link is on its way.",
+    "resetTitle": "New password",
+    "newPassword": "New password",
+    "savePassword": "Save password",
+    "passwordChanged": "Password changed. You can sign in now.",
+    "passwordHint": "At least 6 characters.",
+    "checkInboxTitle": "Confirm your email",
+    "checkInbox": "We sent an email to {{email}}. Open the link in it to confirm your address.",
+    "resendVerification": "Send the email again",
+    "verificationResent": "Email sent again.",
+    "signupNoConfirm": "Account created. You can sign in now.",
+    "verifyTitle": "Email confirmation",
+    "verified": "Your email is confirmed and you are signed in.",
+    "toLogin": "Go to sign in",
+    "sessionExpired": "Your session has expired. Please sign in again.",
+    "errors": {
+      "badCredentials": "Wrong email or password.",
+      "notConfirmed": "Your email is not confirmed yet. Check your inbox.",
+      "suspended": "This account has been suspended by an administrator.",
+      "service": "The sign-in service is unavailable. Try again later.",
+      "shortPassword": "The password must be at least 6 characters long.",
+      "weakPassword": "The password is too weak. Use at least 6 characters.",
+      "badLink": "The link is invalid or has expired.",
+      "tooMany": "Too many requests. Wait a minute and try again."
+    }
+  },
+  "roles": {
+    "attendee": "Attendee",
+    "organizer": "Organizer",
+    "event_admin": "Check-in staff",
+    "platform_admin": "Platform admin"
+  },
+  "profile": {
+    "title": "Profile",
+    "fullName": "Full name",
+    "phone": "Phone",
+    "payout": "Payout details (IBAN / account)",
+    "payoutHint": "Required to activate paid sales. Demo only: no money is transferred.",
+    "saved": "Profile saved.",
+    "saveFailed": "Could not save: {{reason}}",
+    "nameRequired": "Please enter your name."
   }
 }
