@@ -408,7 +408,45 @@
     "freeConfirmed": "You are registered. Total 0 ₸, no payment needed.",
     "paidConfirmed": "Payment received (demo) and your ticket is issued.",
     "noPaymentNeeded": "Free registration: nothing was charged.",
-    "goToOrders": "My orders"
+    "goToOrders": "My orders",
+    "reviewTitle": "Review your order",
+    "quantity": "Quantity",
+    "less": "Fewer",
+    "more": "More",
+    "promoHint": "The server checks the code on the next step.",
+    "campaignPromo": "Campaign QR code: the discount applies after the server checks it.",
+    "campaignBanner": "Campaign promo code {{code}} will be applied at checkout.",
+    "attendees": "Attendee details",
+    "attendeeName": "Name (ticket {{n}})",
+    "attendeeEmail": "Email",
+    "reserve": "Continue",
+    "holdTimer": "Your tickets are reserved for {{time}}",
+    "holdExpired": "The reservation expired and the tickets went back on sale.",
+    "startAgain": "Start again",
+    "discountCode": "Promo code {{code}} (−{{percent}}%)",
+    "demoPayment": "Demo payment",
+    "outcome": {
+      "approved": "Payment succeeds (demo)",
+      "declined": "Bank declines the payment (demo)"
+    },
+    "codes": {
+      "SOLD_OUT": "Not that many tickets are left. Lower the quantity.",
+      "PROMO_NOT_FOUND": "This promo code does not exist for this event.",
+      "PROMO_INACTIVE": "This promo code is not active right now.",
+      "PROMO_EXHAUSTED": "This promo code has reached its usage limit.",
+      "MAX_PER_ORDER": "Too many tickets for one order.",
+      "BAD_QUANTITY": "Invalid quantity.",
+      "PAID_SALES_INACTIVE": "Paid sales for this event are not active yet.",
+      "SALE_WINDOW_CLOSED": "Sales for this ticket type are closed right now.",
+      "EVENT_NOT_ON_SALE": "This event is not on sale.",
+      "TICKET_TYPE_NOT_FOUND": "This ticket type is not available.",
+      "HOLD_EXPIRED": "Your reservation expired. Please start again.",
+      "HOLD_NOT_ACTIVE": "Your reservation is no longer valid. Please start again.",
+      "HOLD_NOT_FOUND": "Reservation not found. Please start again.",
+      "PAYMENT_DECLINED": "Payment declined (demo). Pick another outcome and retry — your reservation is kept.",
+      "SESSION": "Your session has expired. Please sign in again.",
+      "GENERIC": "Could not complete the order. Please try again."
+    }
   },
   "orders": {
     "title": "My orders & tickets",
@@ -530,5 +568,11 @@
     "saved": "Profile saved.",
     "saveFailed": "Could not save: {{reason}}",
     "nameRequired": "Please enter your name."
+  },
+  "orderPage": {
+    "notFound": "Order not found",
+    "tickets": "Tickets",
+    "ticketsIssued_one": "{{count}} ticket issued.",
+    "ticketsIssued_other": "{{count}} tickets issued."
   }
 }

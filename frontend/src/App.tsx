@@ -15,6 +15,7 @@ import { EventManageRoute } from './pages/EventManagePage';
 import { TicketView } from './pages/TicketView';
 import { AuthCallbackPage, ForgotPasswordPage, ResetPasswordPage } from './pages/AuthPages';
 import { ProfilePage } from './pages/ProfilePage';
+import { OrderPage } from './pages/OrderPage';
 import { RequireAuth } from './components/RequireAuth';
 import { getEvent, type EventItem } from './services/events';
 
@@ -26,15 +27,26 @@ function EventPurchase() {
   const { id = '' } = useParams();
   const { user, token } = useAuth();
   const { t } = useTranslation();
+  const [params] = useSearchParams();
+  const promo = params.get('promo');
   const [event, setEvent] = useState<EventItem | null>(null);
   const [open, setOpen] = useState(false);
 
   useEffect(() => { getEvent(id, token).then(setEvent).catch(() => setEvent(null)); }, [id, token]);
 
+  // Campaign QR: /events/:id?promo=CODE — сохраняем код и сразу открываем оформление
+  useEffect(() => {
+    if (!promo) return;
+    saveCampaignPromo(promo);
+    if (user) setOpen(true);
+  }, [promo, user]);
+
   // drafts and cancelled events can be previewed by the owner but not bought
   if (!event || event.status !== 'published' || event.ticketTiers.length === 0) return null;
+  const next = encodeURIComponent(`/events/${id}${promo ? `?promo=${promo}` : ''}`);
   return (
     <div className="mx-auto max-w-4xl px-6 pb-10">
+      {promo && <p className="mb-3 rounded-lg bg-emerald-50 p-3 text-sm text-emerald-800">{t('checkout.campaignBanner', { code: promo.toUpperCase() })}</p>}
       {user ? (
         <>
           <button onClick={() => setOpen(true)}
@@ -42,7 +54,7 @@ function EventPurchase() {
           <CheckoutModal isOpen={open} onClose={() => setOpen(false)} event={event} />
         </>
       ) : (
-        <Link to={`/login?next=/events/${id}`} className="inline-block rounded-lg border border-emerald-600 px-6 py-3 font-semibold text-emerald-700 hover:bg-emerald-50">
+        <Link to={`/login?next=${next}`} className="inline-block rounded-lg border border-emerald-600 px-6 py-3 font-semibold text-emerald-700 hover:bg-emerald-50">
           {t('nav.loginToBuy')}
         </Link>
       )}
@@ -99,6 +111,7 @@ function MainApp() {
         <Route path="/auth/reset-password" element={<ResetPasswordPage />} />
         <Route path="/profile" element={<RequireAuth><ProfilePage /></RequireAuth>} />
         <Route path="/tickets" element={<RequireAuth><TicketDashboard /></RequireAuth>} />
+        <Route path="/orders/:orderId" element={<RequireAuth><OrderPage /></RequireAuth>} />
         <Route path="/tickets/:ticketId" element={<RequireAuth><TicketView /></RequireAuth>} />
         <Route path="/organizer" element={<RequireAuth roles={['organizer']}><OrganizerDashboard /></RequireAuth>} />
         <Route path="/organizer/events/new" element={<RequireAuth roles={['organizer']}><EventManageRoute /></RequireAuth>} />

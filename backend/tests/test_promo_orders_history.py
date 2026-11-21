@@ -59,12 +59,16 @@ def make_hold(**overrides):
     return hold
 
 
-def orders_db(hold, finalize_result="order-1"):
+def orders_db(hold, finalize_result="order-1", tickets=None):
     db = MagicMock()
     table = db.table.return_value.select.return_value
     table.eq.return_value.eq.return_value.execute.return_value.data = [hold] if hold else []
     ends = (datetime.now(timezone.utc) + timedelta(days=10)).isoformat()
     table.eq.return_value.execute.return_value.data = [{"starts_at": ends, "ends_at": ends}]
+    # FS-17: tickets of the finalized order are read back from the database
+    if tickets is None:
+        tickets = [{"id": str(uuid.uuid4()), "attendee_name": None, "status": "valid"} for _ in range((hold or {}).get("quantity", 0))]
+    table.eq.return_value.order.return_value.execute.return_value.data = tickets
     db.rpc.return_value.execute.return_value.data = finalize_result
     return db
 
@@ -164,7 +168,7 @@ def test_campaign_link_redirects_to_frontend():
     with patch("promo.supabase", rpc_returns({"event_id": EVENT_ID, "code": "TEST20"})):
         resp = client.get("/c/abc", follow_redirects=False)
     assert resp.status_code == 302
-    assert resp.headers["location"].endswith("/checkout?promo=TEST20")
+    assert resp.headers["location"].endswith(f"/events/{EVENT_ID}?promo=TEST20")
 
 
 def test_campaign_link_unknown_slug():
@@ -196,8 +200,9 @@ def test_order_declined_card_does_not_finalize():
     as_user(ROLE_ATTENDEE)
     db = orders_db(make_hold())
     with patch("orders.db_for_user", return_value=db):
-        resp = client.post("/api/orders", json={"hold_id": HOLD_ID, "card_number": "4000000000000002"})
+        resp = client.post("/api/orders", json={"hold_id": HOLD_ID, "payment_outcome": "declined"})
     assert resp.status_code == 402
+    assert resp.json()["detail"]["code"] == "PAYMENT_DECLINED"
     db.rpc.assert_not_called()
 
 
@@ -210,7 +215,7 @@ def test_order_unknown_hold():
 
 def test_order_hold_not_active():
     as_user(ROLE_ATTENDEE)
-    with patch("orders.db_for_user", return_value=orders_db(make_hold(status="converted"))):
+    with patch("orders.db_for_user", return_value=orders_db(make_hold(status="released"))):
         resp = client.post("/api/orders", json={"hold_id": HOLD_ID})
     assert resp.status_code == 409
 

@@ -52,3 +52,34 @@ def verify_hmac_signature(qr_payload: str) -> Tuple[bool, str, Dict[str, str]]:
         return False, "Signature mismatch – QR payload may be tampered.", {}
 
     return True, "", {"ticket_id": ticket_id, "event_id": event_id, "user_id": user_id, "expires_at": expires_at}
+
+
+# ---------------------------------------------------------------------------
+# One place that builds the ticket QR (orders, /api/me/tickets, PDF)
+# ---------------------------------------------------------------------------
+QR_GRACE_SECONDS = 24 * 3600
+QR_FALLBACK_SECONDS = 365 * 24 * 3600
+
+
+def qr_expiry_for_event(event) -> int:
+    """QR действует до конца события (или начала) + 24 часа.
+
+    Срок считается от события, а не от момента покупки, поэтому один и тот же
+    билет всегда даёт один и тот же QR (экран, PDF, повторная загрузка).
+    """
+    from datetime import datetime
+
+    raw = (event or {}).get("ends_at") or (event or {}).get("starts_at")
+    if raw:
+        try:
+            return int(datetime.fromisoformat(str(raw).replace("Z", "+00:00")).timestamp()) + QR_GRACE_SECONDS
+        except ValueError:
+            pass
+    return int(time.time()) + QR_FALLBACK_SECONDS
+
+
+def ticket_qr_payload(ticket_id: str, event_id: str, user_id: str, event=None) -> Tuple[str, str]:
+    """Signed payload ``ticket_id:event_id:user_id:expires_at:signature`` and the signature."""
+    expires_at = qr_expiry_for_event(event)
+    signature = generate_hmac_signature(ticket_id, event_id, user_id, expires_at)
+    return f"{ticket_id}:{event_id}:{user_id}:{expires_at}:{signature}", signature

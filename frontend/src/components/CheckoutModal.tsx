@@ -1,20 +1,19 @@
-import React, { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '../context/AuthContext';
-import { TicketPDF, type TicketDetails } from './TicketPDF';
 import { formatKZT, getEvent, HttpError, type EventItem, type TicketTier } from '../services/events';
-import { clearCampaignPromo, formatEventDateTime, readCampaignPromo, ticketsApi, type Quote } from '../services/tickets';
+import { checkoutApi, clearCampaignPromo, formatEventDateTime, readCampaignPromo, type AttendeeInput, type Hold } from '../services/tickets';
 
-interface CheckoutModalProps {
+interface Props {
   isOpen: boolean;
   onClose: () => void;
   event: EventItem;
 }
 
-type Unavailable = 'soldOut' | 'paidInactive' | 'notStarted' | 'ended' | null;
-
-function tierUnavailable(tier: TicketTier, event: EventItem, now = Date.now()): Unavailable {
+// почему тип билета сейчас нельзя купить (null = можно)
+function whyUnavailable(tier: TicketTier, event: EventItem) {
+  const now = Date.now();
   if (tier.remaining !== null && tier.remaining <= 0) return 'soldOut';
   if (tier.priceKZT > 0 && !event.paidSalesActive) return 'paidInactive';
   if (tier.saleStartsAt && now < Date.parse(tier.saleStartsAt)) return 'notStarted';
@@ -22,254 +21,283 @@ function tierUnavailable(tier: TicketTier, event: EventItem, now = Date.now()): 
   return null;
 }
 
-interface Confirmation {
-  orderId: string;
-  total: number;
-  ticket: TicketDetails;
+// бэкенд отдаёт коды ошибок вроде SOLD_OUT, PROMO_EXHAUSTED — переводим их в текст
+function errorCode(e: unknown) {
+  if (e instanceof HttpError) {
+    if (typeof e.detail === 'string' && /^[A-Z_]+$/.test(e.detail)) return e.detail;
+    if (e.detail && typeof e.detail === 'object' && 'code' in e.detail) return String((e.detail as { code: string }).code);
+    if (e.status === 401) return 'SESSION';
+  }
+  return 'GENERIC';
 }
 
-/**
- * Checkout for one ticket (SRS 4.4 / 4.6 / UC3 / UC10).
- * All amounts come from the server (`/checkout/quote`); the client never sends prices.
- * Payment is a clearly-labelled simulation — no real money moves.
- */
-export const CheckoutModal: React.FC<CheckoutModalProps> = ({ isOpen, onClose, event: initialEvent }) => {
+function two(n: number) {
+  return n < 10 ? '0' + n : String(n);
+}
+
+export function CheckoutModal({ isOpen, onClose, event: initialEvent }: Props) {
   const { user, token } = useAuth();
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const [event, setEvent] = useState(initialEvent);
-  const tiers = event.ticketTiers;
-  const firstAvailable = (ev: EventItem) => ev.ticketTiers.find((x) => !tierUnavailable(x, ev))?.id ?? '';
-  const [tierId, setTierId] = useState<string>(firstAvailable(initialEvent));
-  const [promoInput, setPromoInput] = useState(readCampaignPromo());
-  const [appliedPromo, setAppliedPromo] = useState('');
-  const [quote, setQuote] = useState<Quote | null>(null);
-  const [promoMsg, setPromoMsg] = useState<{ text: string; error: boolean } | null>(null);
-  const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
-  const [showTicket, setShowTicket] = useState(false);
 
-  // Fresh event state on open, so a just-activated paid tier is purchasable without a page reload.
+  // шаг 1 — выбор, шаг 2 — проверка заказа и оплата
+  const [step, setStep] = useState('select');
+  const [tierId, setTierId] = useState(initialEvent.ticketTiers.find((x) => !whyUnavailable(x, initialEvent))?.id || '');
+  const [qty, setQty] = useState(1);
+  const [promo, setPromo] = useState(readCampaignPromo());
+  const [attendees, setAttendees] = useState<AttendeeInput[]>([{ name: user?.name || '', email: user?.email || '' }]);
+  const [hold, setHold] = useState<Hold | null>(null);
+  const [outcome, setOutcome] = useState<'approved' | 'declined'>('approved');
+  const [error, setError] = useState('');
+  const [promoError, setPromoError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [now, setNow] = useState(Date.now());
+
+  // при открытии обновляем событие (остатки, активированы ли платные продажи)
   useEffect(() => {
     if (!isOpen) return;
-    let cancelled = false;
     getEvent(initialEvent.id, token)
-      .then((ev) => {
-        if (cancelled) return;
-        setEvent(ev);
-        setTierId((current) => {
-          const tier = ev.ticketTiers.find((x) => x.id === current);
-          return tier && !tierUnavailable(tier, ev) ? current : firstAvailable(ev);
-        });
-      })
-      .catch(() => { /* keep the event we already have */ });
-    return () => { cancelled = true; };
+      .then((ev) => setEvent(ev))
+      .catch(() => {});
   }, [isOpen, initialEvent.id, token]);
 
-  const friendlyError = (e: unknown) => {
-    if (e instanceof HttpError) {
-      if (e.status === 402) return t('checkout.errors.paidInactive');
-      if (e.status === 409) return t('checkout.errors.alreadyRegistered');
-      if (e.status === 401) return t('checkout.errors.sessionExpired');
-    }
-    return t('checkout.errors.generic', { reason: (e as Error).message });
-  };
-
-  // Re-price whenever the ticket type or the applied promo changes.
+  // таймер резерва
   useEffect(() => {
-    if (!isOpen || !token || !tierId) return;
-    let cancelled = false;
-    setError('');
-    ticketsApi
-      .quote(token, event.id, tierId, appliedPromo)
-      .then((q) => { if (!cancelled) setQuote(q); })
-      .catch((e: Error) => {
-        if (cancelled) return;
-        setQuote(null);
-        if (appliedPromo) {
-          setPromoMsg({ text: e.message, error: true });
-          setAppliedPromo('');
-        } else {
-          setError(friendlyError(e));
-        }
-      });
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen, token, event.id, tierId, appliedPromo]);
-
-  // Campaign QR: auto-apply the code once the modal opens.
-  useEffect(() => {
-    if (isOpen && promoInput && !appliedPromo) setAppliedPromo(promoInput.trim().toUpperCase());
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen]);
-
-  useEffect(() => {
-    if (quote && appliedPromo) {
-      setPromoMsg(
-        quote.discount_percent > 0
-          ? { text: t('checkout.promoApplied', { code: quote.promo_code, percent: quote.discount_percent }), error: false }
-          : { text: t('checkout.promoNotForFree'), error: true },
-      );
-    }
-  }, [quote, appliedPromo, t]);
+    if (step !== 'review') return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [step]);
 
   if (!isOpen) return null;
 
-  const close = () => { setConfirmation(null); setShowTicket(false); onClose(); };
+  const tiers = event.ticketTiers;
+  const tier = tiers.find((x) => x.id === tierId);
+  let maxQty = 10;
+  if (tier?.maxPerOrder) maxQty = Math.min(maxQty, tier.maxPerOrder);
+  if (tier?.remaining !== null && tier?.remaining !== undefined) maxQty = Math.max(1, Math.min(maxQty, tier.remaining));
 
-  if (confirmation && showTicket) {
-    return <TicketPDF ticket={confirmation.ticket} onClose={close} />;
+  let secondsLeft = 0;
+  if (hold) secondsLeft = Math.max(0, Math.floor((Date.parse(hold.hold_expires_at) - now) / 1000));
+  const expired = step === 'review' && hold !== null && secondsLeft === 0;
+
+  function changeQty(n: number) {
+    const q = Math.min(maxQty, Math.max(1, n));
+    setQty(q);
+    // полей для посетителей столько же, сколько билетов
+    const list = attendees.slice(0, q);
+    while (list.length < q) list.push({ name: '', email: '' });
+    setAttendees(list);
   }
 
-  const tier = tiers.find((x) => x.id === tierId);
-  const isFree = (quote?.total_kzt ?? tier?.priceKZT ?? 0) === 0;
-  const paidBlocked = tiers.some((x) => tierUnavailable(x, event) === 'paidInactive');
-  const nothingAvailable = tiers.length > 0 && tiers.every((x) => tierUnavailable(x, event));
+  function setAttendee(i: number, field: 'name' | 'email', value: string) {
+    const list = [...attendees];
+    list[i] = { ...list[i], [field]: value };
+    setAttendees(list);
+  }
 
-  const applyPromo = () => {
-    setPromoMsg(null);
-    setAppliedPromo(promoInput.trim().toUpperCase());
-  };
+  function releaseHold() {
+    if (hold && token) checkoutApi.release(token, hold.hold_id).catch(() => {});
+  }
 
-  const confirm = async () => {
-    if (!token || !tierId) return;
+  function close() {
+    if (step === 'review') releaseHold(); // ушли с оформления — билеты сразу обратно в продажу
+    setStep('select');
+    setHold(null);
+    setError('');
+    onClose();
+  }
+
+  function back() {
+    releaseHold();
+    setHold(null);
+    setError('');
+    setStep('select');
+  }
+
+  async function reserve(e: React.FormEvent) {
+    e.preventDefault();
+    if (!token || !tier) return;
+    setBusy(true);
+    setError('');
+    setPromoError('');
+    try {
+      // цену и скидку считает сервер, билеты резервируются на 15 минут
+      const h = await checkoutApi.hold(token, tier.id, qty, tier.priceKZT > 0 ? promo.trim() : undefined);
+      setHold(h);
+      setOutcome('approved');
+      setNow(Date.now());
+      setStep('review');
+    } catch (err) {
+      const code = errorCode(err);
+      if (code.startsWith('PROMO_')) setPromoError(t('checkout.codes.' + code));
+      else setError(t('checkout.codes.' + code, { defaultValue: t('checkout.codes.GENERIC') }));
+    }
+    setBusy(false);
+  }
+
+  async function pay() {
+    if (!token || !hold || busy) return; // busy — защита от двойного клика
     setBusy(true);
     setError('');
     try {
-      const issued = await ticketsApi.register(token, event.id, tierId, quote?.promo_code ?? undefined);
+      const list = attendees.map((a, i) => ({
+        name: a.name.trim() || (i === 0 ? user?.name || '' : ''),
+        email: a.email.trim() || (i === 0 ? user?.email || '' : ''),
+      }));
+      const order = await checkoutApi.confirm(token, hold.hold_id, outcome, list);
       clearCampaignPromo();
-      setConfirmation({
-        orderId: issued.order_id,
-        total: issued.pricing?.total_kzt ?? quote?.total_kzt ?? 0,
-        ticket: {
-          ticketId: issued.id,
-          eventName: event.title,
-          eventDate: formatEventDateTime(event.startsAt, event.timezone),
-          venue: event.venueName,
-          venueAddress: event.venueAddress,
-          attendeeName: user?.name || user?.email || '',
-          ticketType: tier?.name ?? '',
-          qrPayload: issued.qr_payload,
-        },
-      });
-    } catch (e) {
-      setError(friendlyError(e));
-    } finally {
-      setBusy(false);
+      setStep('select');
+      setHold(null);
+      onClose();
+      navigate('/orders/' + order.order_id + '?new=1');
+    } catch (err) {
+      setError(t('checkout.codes.' + errorCode(err), { defaultValue: t('checkout.codes.GENERIC') }));
     }
-  };
+    setBusy(false);
+  }
+
+  let payLabel = t('checkout.pay', { amount: hold ? formatKZT(hold.total_kzt) : '' });
+  if (busy) payLabel = t('checkout.processing');
+  else if (expired) payLabel = t('checkout.startAgain');
+  else if (hold && hold.total_kzt === 0) payLabel = t('checkout.registerFree');
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true" aria-labelledby="checkout-title">
-      <div className="max-h-[95vh] w-full max-w-md overflow-y-auto rounded-xl bg-white p-6 shadow-xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true">
+      <div className="max-h-[95vh] w-full max-w-lg overflow-y-auto rounded-xl bg-white p-6 shadow-xl">
         <div className="mb-4 flex items-center justify-between border-b pb-3">
-          <h3 id="checkout-title" className="text-xl font-bold text-gray-800">
-            {confirmation ? t(confirmation.total === 0 ? 'checkout.freeConfirmedTitle' : 'checkout.paidConfirmedTitle') : t('checkout.title')}
-          </h3>
-          <button onClick={close} aria-label={t('common.close')} className="text-xl font-bold text-gray-400 hover:text-gray-600">&times;</button>
+          <h2 className="text-xl font-bold text-gray-800">{step === 'select' ? t('checkout.title') : t('checkout.reviewTitle')}</h2>
+          <button onClick={close} aria-label={t('common.close')} className="text-xl font-bold text-gray-400">&times;</button>
         </div>
 
-        {confirmation ? (
-          <div role="status" className="space-y-4">
-            <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
-              <p className="font-semibold">
-                {confirmation.total === 0 ? t('checkout.freeConfirmed') : t('checkout.paidConfirmed')}
-              </p>
-              <p className="mt-1">{event.title} · {confirmation.ticket.ticketType}</p>
-            </div>
-            <dl className="space-y-1 text-sm">
-              <div className="flex justify-between"><dt className="text-gray-500">{t('orders.order')}</dt><dd className="font-mono">#{confirmation.orderId.slice(0, 8)}</dd></div>
-              <div className="flex justify-between border-t pt-2 text-base font-bold">
-                <dt>{t('checkout.total')}</dt>
-                <dd>{formatKZT(confirmation.total)}</dd>
-              </div>
-              {confirmation.total === 0 && <p className="text-xs text-gray-500">{t('checkout.noPaymentNeeded')}</p>}
-            </dl>
-            <div className="flex flex-wrap gap-2">
-              <button onClick={() => setShowTicket(true)} className="flex-1 rounded-lg bg-blue-600 py-2.5 text-sm font-semibold text-white hover:bg-blue-700">
-                {t('orders.openTicket')}
-              </button>
-              <Link to="/tickets" onClick={close} className="flex-1 rounded-lg border border-gray-300 py-2.5 text-center text-sm font-semibold hover:bg-gray-50">
-                {t('checkout.goToOrders')}
-              </Link>
-            </div>
-          </div>
-        ) : (
-          <>
-            <p className="font-semibold text-gray-800">{event.title}</p>
-            <p className="mb-4 text-sm text-gray-500">{formatEventDateTime(event.startsAt, event.timezone)} · {event.venueName}</p>
+        <p className="font-semibold text-gray-800">{event.title}</p>
+        <p className="mb-4 text-sm text-gray-500">{formatEventDateTime(event.startsAt, event.timezone)} · {event.venueName}</p>
 
-            {tiers.length === 0 ? (
-              <p className="rounded-lg bg-gray-50 p-3 text-sm text-gray-600">{t('checkout.noTiers')}</p>
-            ) : (
-              <fieldset className="mb-4 space-y-2">
-                <legend className="mb-1 text-xs font-semibold text-gray-600">{t('checkout.ticketType')}</legend>
-                {tiers.map((x) => {
-                  const why = tierUnavailable(x, event);
-                  return (
-                    <label key={x.id} className={`flex items-center justify-between rounded-lg border p-3 text-sm ${tierId === x.id ? 'border-blue-500 bg-blue-50' : 'border-gray-200'} ${why ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
-                      <span className="flex items-center gap-2">
-                        <input type="radio" name="tier" value={x.id} checked={tierId === x.id} disabled={Boolean(why)}
-                          onChange={() => setTierId(x.id)} />
-                        <span>
-                          {x.name}
-                          {why && <span className="block text-xs text-red-600">{t(`checkout.unavailable.${why}`)}</span>}
-                        </span>
+        {step === 'select' && (
+          <form onSubmit={reserve}>
+            {tiers.length === 0 && <p className="rounded-lg bg-gray-50 p-3 text-sm text-gray-600">{t('checkout.noTiers')}</p>}
+
+            <div className="mb-4 space-y-2">
+              <p className="text-xs font-semibold text-gray-600">{t('checkout.ticketType')}</p>
+              {tiers.map((x) => {
+                const why = whyUnavailable(x, event);
+                return (
+                  <label key={x.id} className={`flex items-center justify-between rounded-lg border p-3 text-sm ${tierId === x.id ? 'border-blue-500 bg-blue-50' : 'border-gray-200'} ${why ? 'opacity-60' : 'cursor-pointer'}`}>
+                    <span className="flex items-center gap-2">
+                      <input type="radio" name="tier" checked={tierId === x.id} disabled={!!why} onChange={() => { setTierId(x.id); changeQty(1); }} />
+                      <span>
+                        {x.name}
+                        {why && <span className="block text-xs text-red-600">{t('checkout.unavailable.' + why)}</span>}
+                        {!why && x.remaining !== null && <span className="block text-xs text-gray-500">{t('details.left', { count: x.remaining })}</span>}
                       </span>
-                      <strong>{x.priceKZT > 0 ? formatKZT(x.priceKZT) : t('common.free')}</strong>
-                    </label>
-                  );
-                })}
-                <p className="text-xs text-gray-500">{t('checkout.onePerAccount')}</p>
-              </fieldset>
-            )}
+                    </span>
+                    <strong>{x.priceKZT > 0 ? formatKZT(x.priceKZT) : t('common.free')}</strong>
+                  </label>
+                );
+              })}
+            </div>
 
-            {paidBlocked && (
+            {tiers.some((x) => whyUnavailable(x, event) === 'paidInactive') && (
               <p className="mb-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-800">{t('checkout.paidBlockedNote')}</p>
             )}
 
-            {tierId && !isFree && (
-              <div className="mb-4">
-                <label htmlFor="promo" className="mb-1 block text-xs font-semibold text-gray-600">{t('checkout.promo')}</label>
-                <div className="flex gap-2">
-                  <input id="promo" type="text" value={promoInput} onChange={(e) => setPromoInput(e.target.value)}
-                    className="flex-1 rounded-md border border-gray-300 px-3 py-1.5 text-sm uppercase focus:border-blue-500 focus:outline-none" />
-                  <button onClick={applyPromo} disabled={!promoInput.trim()}
-                    className="rounded-md bg-gray-800 px-4 py-1.5 text-sm font-medium text-white hover:bg-gray-900 disabled:opacity-50">
-                    {t('checkout.apply')}
-                  </button>
+            {tier && (
+              <>
+                <div className="mb-4 flex items-center justify-between rounded-lg bg-gray-50 p-3">
+                  <label htmlFor="qty" className="text-sm font-medium">{t('checkout.quantity')}</label>
+                  <div className="flex items-center gap-2">
+                    <button type="button" onClick={() => changeQty(qty - 1)} disabled={qty <= 1} className="h-8 w-8 rounded border bg-white disabled:opacity-40">−</button>
+                    <input id="qty" type="number" value={qty} onChange={(e) => changeQty(Number(e.target.value) || 1)} className="w-14 rounded border p-1 text-center" />
+                    <button type="button" onClick={() => changeQty(qty + 1)} disabled={qty >= maxQty} className="h-8 w-8 rounded border bg-white disabled:opacity-40">+</button>
+                  </div>
                 </div>
-                {promoMsg && <p role="status" className={`mt-1 text-xs ${promoMsg.error ? 'text-red-600' : 'text-emerald-700'}`}>{promoMsg.text}</p>}
-              </div>
-            )}
 
-            {quote && tierId && (
-              <dl className="mb-4 space-y-2 border-t pt-3 text-sm">
-                <div className="flex justify-between text-gray-600"><dt>{t('checkout.subtotal')}</dt><dd>{formatKZT(quote.subtotal_kzt)}</dd></div>
-                {quote.discount_kzt > 0 && (
-                  <div className="flex justify-between font-medium text-emerald-700"><dt>{t('checkout.discount', { percent: quote.discount_percent })}</dt><dd>−{formatKZT(quote.discount_kzt)}</dd></div>
+                {tier.priceKZT > 0 && (
+                  <div className="mb-4">
+                    <label htmlFor="promo" className="mb-1 block text-xs font-semibold text-gray-600">{t('checkout.promo')}</label>
+                    <input id="promo" value={promo} onChange={(e) => { setPromo(e.target.value.toUpperCase()); setPromoError(''); }}
+                      className="w-full rounded-md border border-gray-300 px-3 py-1.5 text-sm uppercase" />
+                    {promoError
+                      ? <p role="alert" className="mt-1 text-xs text-red-600">{promoError}</p>
+                      : <p className="mt-1 text-xs text-gray-500">{promo && promo === readCampaignPromo() ? t('checkout.campaignPromo') : t('checkout.promoHint')}</p>}
+                  </div>
                 )}
-                {quote.fee_kzt > 0 && (
-                  <div className="flex justify-between text-gray-600"><dt>{t('checkout.fee')}</dt><dd>{formatKZT(quote.fee_kzt)}</dd></div>
-                )}
-                <div className="flex justify-between border-t pt-2 text-base font-bold text-gray-900"><dt>{t('checkout.total')}</dt><dd className="text-blue-600">{formatKZT(quote.total_kzt)}</dd></div>
-              </dl>
+
+                <div className="mb-4 space-y-3">
+                  <p className="text-xs font-semibold text-gray-600">{t('checkout.attendees')}</p>
+                  {attendees.map((a, i) => (
+                    <div key={i} className="grid gap-2 sm:grid-cols-2">
+                      <label className="text-xs text-gray-600">{t('checkout.attendeeName', { n: i + 1 })}
+                        <input value={a.name} onChange={(e) => setAttendee(i, 'name', e.target.value)} placeholder={i === 0 ? user?.name : ''}
+                          className="mt-1 w-full rounded-md border border-gray-300 px-2 py-1.5 text-sm" />
+                      </label>
+                      <label className="text-xs text-gray-600">{t('checkout.attendeeEmail')}
+                        <input type="email" value={a.email} onChange={(e) => setAttendee(i, 'email', e.target.value)} placeholder={i === 0 ? user?.email : ''}
+                          className="mt-1 w-full rounded-md border border-gray-300 px-2 py-1.5 text-sm" />
+                      </label>
+                    </div>
+                  ))}
+                </div>
+              </>
             )}
 
-            {tierId && !isFree && (
-              <p className="mb-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-800">{t('checkout.simulatedNote')}</p>
+            {tiers.length > 0 && tiers.every((x) => whyUnavailable(x, event)) && (
+              <p className="mb-4 rounded-lg bg-gray-50 p-3 text-sm text-gray-700">{t('checkout.nothingAvailable')}</p>
             )}
-
-            {nothingAvailable && <p role="alert" className="mb-4 rounded-lg bg-gray-50 p-3 text-sm text-gray-700">{t('checkout.nothingAvailable')}</p>}
             {error && <p role="alert" className="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}
 
-            <button onClick={confirm} disabled={busy || !quote || !tierId}
-              className="w-full rounded-lg bg-blue-600 py-3 font-semibold text-white transition hover:bg-blue-700 disabled:opacity-50">
-              {busy ? t('checkout.processing') : isFree ? t('checkout.registerFree') : t('checkout.pay', { amount: quote ? formatKZT(quote.total_kzt) : '' })}
+            <button type="submit" disabled={busy || !tier || !!(tier && whyUnavailable(tier, event))}
+              className="w-full rounded-lg bg-blue-600 py-3 font-semibold text-white hover:bg-blue-700 disabled:opacity-50">
+              {busy ? t('checkout.processing') : t('checkout.reserve')}
             </button>
-          </>
+          </form>
+        )}
+
+        {step === 'review' && hold && (
+          <div className="space-y-4">
+            <p className={`rounded-lg p-2 text-center text-sm ${expired ? 'bg-red-50 text-red-700' : 'bg-blue-50 text-blue-800'}`}>
+              {expired ? t('checkout.holdExpired') : t('checkout.holdTimer', { time: two(Math.floor(secondsLeft / 60)) + ':' + two(secondsLeft % 60) })}
+            </p>
+
+            <div className="space-y-2 text-sm">
+              <p className="flex justify-between"><span className="text-gray-600">{tier?.name} × {hold.quantity}</span><span>{formatKZT(hold.subtotal_kzt)}</span></p>
+              {hold.discount_kzt > 0 && (
+                <p className="flex justify-between text-emerald-700">
+                  <span>{t('checkout.discountCode', { code: promo, percent: hold.discount_percent })}</span><span>−{formatKZT(hold.discount_kzt)}</span>
+                </p>
+              )}
+              {hold.fee_kzt > 0 && <p className="flex justify-between text-gray-600"><span>{t('checkout.fee')}</span><span>{formatKZT(hold.fee_kzt)}</span></p>}
+              <p className="flex justify-between border-t pt-2 text-base font-bold"><span>{t('checkout.total')}</span><span className="text-blue-600">{formatKZT(hold.total_kzt)}</span></p>
+            </div>
+
+            {hold.total_kzt > 0 ? (
+              <div className="rounded-lg border border-amber-300 bg-amber-50 p-3">
+                <p className="text-xs font-semibold text-amber-900">{t('checkout.demoPayment')}</p>
+                <p className="mb-2 text-xs text-amber-800">{t('checkout.simulatedNote')}</p>
+                <label className="flex items-center gap-2 text-sm">
+                  <input type="radio" name="outcome" checked={outcome === 'approved'} onChange={() => setOutcome('approved')} />
+                  {t('checkout.outcome.approved')}
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <input type="radio" name="outcome" checked={outcome === 'declined'} onChange={() => setOutcome('declined')} />
+                  {t('checkout.outcome.declined')}
+                </label>
+              </div>
+            ) : (
+              <p className="text-sm text-gray-600">{t('checkout.noPaymentNeeded')}</p>
+            )}
+
+            {error && <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}
+
+            <div className="flex gap-2">
+              <button onClick={back} disabled={busy} className="flex-1 rounded-lg border border-gray-300 py-3 text-sm font-semibold">{t('common.back')}</button>
+              <button onClick={expired ? back : pay} disabled={busy} className="flex-[2] rounded-lg bg-blue-600 py-3 font-semibold text-white disabled:opacity-50">
+                {payLabel}
+              </button>
+            </div>
+          </div>
         )}
       </div>
     </div>
   );
-};
+}
