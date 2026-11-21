@@ -488,7 +488,10 @@
     "sendCancel": "Send request",
     "cancelSent": "Cancellation request sent to the organizer.",
     "cancelSubject": "Ticket cancellation: {{event}}",
-    "cancelDefaultReason": "The attendee asked to cancel the ticket."
+    "cancelDefaultReason": "The attendee asked to cancel the ticket.",
+    "viewTicket": "Ticket",
+    "refundedNote": "Refunded, the ticket is no longer valid.",
+    "cancelledNote": "Cancelled, the ticket is no longer valid."
   },
   "ticket": {
     "print": "Print / Save as PDF (A4)",
@@ -502,7 +505,10 @@
     "id": "Ticket ID",
     "footer": "Show the QR code at the entrance. The digital and printed copies are the same ticket and can be used once.",
     "notFound": "Ticket not found",
-    "backToOrders": "← Back to my orders"
+    "backToOrders": "← Back to my orders",
+    "downloadPdf": "Download PDF",
+    "pdfFailed": "Could not download the PDF: {{reason}}",
+    "invalidBanner": "Ticket is not valid — {{status}}"
   },
   "auth": {
     "loginTitle": "Log in to BiletFlow",

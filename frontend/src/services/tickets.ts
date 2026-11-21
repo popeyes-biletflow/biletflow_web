@@ -1,37 +1,56 @@
 import i18n, { formatEventDate } from '../i18n';
 import { http } from './events';
+import { API_BASE_URL } from './config';
 
 export type TicketStatus = 'ACTIVE' | 'USED' | 'CANCELLED' | 'REFUNDED' | 'CANCEL_PENDING';
 
-/** Row returned by GET /api/me/tickets */
+// билет из /api/me/tickets и /api/me/tickets/{id}
 export interface MyTicket {
   id: string;
   order_id: string;
   event_id: string;
   event_title: string;
+  event_status: string | null;
   starts_at: string | null;
   ends_at: string | null;
   timezone: string;
   venue_name: string;
   venue_address: string;
   ticket_type: string;
-  subtotal_kzt: number;
-  discount_kzt: number;
-  fee_kzt: number;
-  total_kzt: number;
-  promo_code: string | null;
-  purchased_at: string | null;
+  attendee_name: string;
+  seat: string | null;
   status: TicketStatus;
-  refund_case_id: string | null;
   checked_in_at: string | null;
+  refund_case_id: string | null;
   qr_payload: string | null;
+  purchased_at: string | null;
+  promo_code: string | null;
+  order_total_kzt: number;
 }
 
 export const ticketsApi = {
   mine: (token: string) => http<MyTicket[]>('/api/me/tickets', {}, token),
+  one: (token: string, ticketId: string) => http<MyTicket>(`/api/me/tickets/${ticketId}`, {}, token),
 
-  /** Cancellation / refund request = support case with category "refund" linked to the ticket (SRS 4.9, 4.13). */
-  requestCancel: (token: string, ticket: MyTicket, reason: string) =>
+  // PDF собирает сервер, тут просто скачиваем файл
+  downloadPdf: async (token: string, ticketId: string) => {
+    const lang = (i18n.language || 'ru').slice(0, 2);
+    const res = await fetch(API_BASE_URL + '/api/me/tickets/' + ticketId + '/pdf?lang=' + lang, {
+      headers: { Authorization: 'Bearer ' + token },
+    });
+    if (res.status === 401) window.dispatchEvent(new CustomEvent('auth:unauthorized'));
+    if (!res.ok) throw new Error('PDF (' + res.status + ')');
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'biletflow-ticket-' + ticketId.slice(0, 8) + '.pdf';
+    a.click();
+    URL.revokeObjectURL(url);
+  },
+
+  // запрос на отмену = обращение в поддержку с категорией refund
+  requestCancel: (token: string, ticket: { id: string; event_title: string }, reason: string) =>
     http<{ id: string }>(
       '/api/support/cases',
       {
@@ -47,7 +66,7 @@ export const ticketsApi = {
     ),
 };
 
-// ---------- FS-17: checkout через холд ----------
+// ---- оформление заказа через холд (FS-17) ----
 export interface Hold {
   hold_id: string;
   event_id: string;
@@ -87,7 +106,7 @@ export interface MyOrderTicket {
   qr_payload: string | null;
 }
 
-/** Row returned by GET /api/me/orders and /api/me/orders/{id} */
+// заказ из /api/me/orders
 export interface MyOrder {
   id: string;
   status: string;
@@ -111,7 +130,7 @@ export interface MyOrder {
 }
 
 export const checkoutApi = {
-  /** Резервирует билеты на 15 минут, сервер считает цену и применяет промокод */
+  // резерв на 15 минут, цену и промокод считает сервер
   hold: (token: string, ticketTypeId: string, quantity: number, code?: string) =>
     http<Hold>(
       '/api/checkout/apply-promo',
@@ -122,7 +141,7 @@ export const checkoutApi = {
   release: (token: string, holdId: string) =>
     http<{ released: boolean }>(`/api/checkout/holds/${holdId}/release`, { method: 'POST' }, token),
 
-  /** Повторный вызов с тем же hold_id возвращает тот же заказ (идемпотентно) */
+  // повтор с тем же hold_id вернёт тот же заказ
   confirm: (token: string, holdId: string, outcome: PaymentOutcome, attendees: AttendeeInput[]) =>
     http<OrderResult>(
       '/api/orders',
@@ -136,7 +155,7 @@ export const checkoutApi = {
 
 const PROMO_KEY = 'campaign_promo';
 
-/** Promo code that arrived through a Campaign QR link (/checkout?promo=CODE), if any. */
+// промокод из ссылки кампании (/events/:id?promo=CODE)
 export const readCampaignPromo = () => {
   try { return sessionStorage.getItem(PROMO_KEY) ?? ''; } catch { return ''; }
 };

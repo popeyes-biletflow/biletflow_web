@@ -7,10 +7,12 @@ GET /api/me/orders/{order_id}  - один заказ (страница посл�
 Чужой order_id просто не найдётся (404).
 """
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
 
 from crypto import ticket_qr_payload
 from deps import db_for_user, get_current_user, sanitize_error
 from schemas import CurrentUser
+from ticket_pdf import render_ticket_pdf
 
 router = APIRouter(prefix="/api/me", tags=["my-orders"])
 
@@ -175,3 +177,81 @@ async def my_order(order_id: str, current_user: CurrentUser = Depends(get_curren
     if not rows:
         raise HTTPException(status_code=404, detail="Order not found.")
     return rows[0]
+
+
+# FS-18: один билет и PDF для печати
+
+def flat_tickets(orders, user):
+    # билеты из заказов одним списком (формат /api/me/tickets)
+    out = []
+    for o in orders:
+        ev = o["event"]
+        for t in o["tickets"]:
+            out.append({
+                "id": t["id"],
+                "order_id": o["id"],
+                "event_id": ev["id"],
+                "event_title": ev["title"],
+                "event_status": ev["status"],
+                "starts_at": ev["starts_at"],
+                "ends_at": ev["ends_at"],
+                "timezone": ev["timezone"],
+                "venue_name": ev["venue_name"],
+                "venue_address": ev["venue_address"],
+                "ticket_type": o["ticket_type"]["name"],
+                "attendee_name": t["attendee_name"] or user.full_name or user.email,
+                "seat": t["seat"],
+                "status": t["status"],
+                "checked_in_at": t["checked_in_at"],
+                "refund_case_id": t["refund_case_id"],
+                "qr_payload": t["qr_payload"],
+                "purchased_at": o["created_at"],
+                "promo_code": o["promo_code"],
+                "order_total_kzt": o["breakdown_kzt"]["total"],  # сумма за весь заказ
+            })
+    return out
+
+
+def load_one_ticket(db, user, ticket_id):
+    rows = db.table("tickets").select("id, order_id").eq("id", ticket_id).eq("user_id", user.id).execute().data or []
+    if not rows or not rows[0].get("order_id"):
+        raise HTTPException(status_code=404, detail="Ticket not found.")
+    orders = load_orders(db, user, str(rows[0]["order_id"]))
+    for t in flat_tickets(orders, user):
+        if t["id"] == str(ticket_id):
+            return t
+    raise HTTPException(status_code=404, detail="Ticket not found.")
+
+
+@router.get("/tickets/{ticket_id}")
+async def my_ticket(ticket_id: str, current_user: CurrentUser = Depends(get_current_user)):
+    db = db_for_user(current_user.access_token)
+    try:
+        return load_one_ticket(db, current_user, ticket_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=sanitize_error(e))
+
+
+@router.get("/tickets/{ticket_id}/pdf")
+async def my_ticket_pdf(ticket_id: str, lang: str = "ru", current_user: CurrentUser = Depends(get_current_user)):
+    db = db_for_user(current_user.access_token)
+    try:
+        ticket = load_one_ticket(db, current_user, ticket_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=sanitize_error(e))
+
+    if lang not in ("ru", "kk", "en"):
+        lang = "ru"
+    pdf = render_ticket_pdf(ticket, lang)
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="biletflow-ticket-{ticket_id[:8]}.pdf"',
+            "Cache-Control": "no-store",
+        },
+    )
