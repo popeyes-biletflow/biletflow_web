@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { useAuth } from '../context/AuthContext';
 import { formatKZT, HttpError } from '../services/events';
 import { checkoutApi, formatEventDateTime, type MyOrder } from '../services/tickets';
+import { SupportDialog } from '../components/SupportDialog';
 
 // страница заказа — после оплаты переходим сюда, данные всегда с сервера
 export function OrderPage() {
@@ -14,6 +15,7 @@ export function OrderPage() {
   const [order, setOrder] = useState<MyOrder | null>(null);
   const [status, setStatus] = useState('loading');
   const [error, setError] = useState('');
+  const [help, setHelp] = useState(false);
 
   useEffect(() => {
     if (!token) return;
@@ -74,7 +76,10 @@ export function OrderPage() {
           <p className="flex justify-between border-t pt-2 font-bold"><span>{t('checkout.total')}</span><span>{formatKZT(order.breakdown_kzt.total)}</span></p>
         </div>
         <p className="mt-2 text-xs text-gray-500">{free ? t('checkout.noPaymentNeeded') : t('orders.paidSimulated')}</p>
+        <button onClick={() => setHelp(true)} className="mt-3 text-sm font-semibold text-blue-600 hover:underline">{t('support.helpOrder')}</button>
       </section>
+      <SupportDialog open={help} onClose={() => setHelp(false)} context={{ order_id: order.id }}
+        contextLabel={`${t('orders.order')} #${order.id.slice(0, 8)} · ${order.event.title}`} defaultCategory="payment" />
 
       <section className="space-y-3">
         <h2 className="text-lg font-bold">{t('orderPage.tickets')}</h2>
