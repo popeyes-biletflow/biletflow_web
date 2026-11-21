@@ -58,6 +58,7 @@ from routers.event_history import router as event_history_router
 from routers.mobile import router as mobile_router
 from routers.my_orders import router as my_orders_router
 from routers.support_escalation import router as support_escalation_router
+from routers.notify_admin import router as notify_admin_router
 app.include_router(promo_router)
 app.include_router(analytics_router)
 app.include_router(event_history_router)
@@ -68,6 +69,7 @@ app.include_router(orders_router)
 app.include_router(mobile_router)
 app.include_router(my_orders_router)
 app.include_router(support_escalation_router)
+app.include_router(notify_admin_router)
 app.include_router(admin_router)
 
 
@@ -424,7 +426,18 @@ async def update_organizer_event(
         )
     if not response.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found.")
-    return response.data[0]
+    updated = response.data[0]
+
+    # FS-20: держателям билетов пишем, только если поменялись дата / время / место
+    watched = ("starts_at", "ends_at", "venue_name", "venue_address")
+    if updated.get("status") == "published" and any(str(event.get(k)) != str(updated.get(k)) for k in watched):
+        try:
+            import notify
+            version = "|".join(str(updated.get(k)) for k in watched)
+            notify.notify_event_holders(db, updated, "EVENT_UPDATED", f"updated:{abs(hash(version))}")
+        except Exception:
+            pass
+    return updated
 
 
 @app.post("/api/organizer/events/{event_id}/publish")
@@ -522,8 +535,7 @@ async def cancel_organizer_event(
 ):
     require_organizer(current_user)
     db = db_for_user(current_user.access_token)
-    load_owned_event(db, event_id, current_user)
-    # TODO audit
+    previous = load_owned_event(db, event_id, current_user)
     try:
         response = (
             db.table("events")
@@ -538,7 +550,16 @@ async def cancel_organizer_event(
         )
     if not response.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found.")
-    return response.data[0]
+    cancelled = response.data[0]
+
+    # FS-20: всем держателям билетов — письмо и уведомление об отмене (один раз на событие)
+    if previous.get("status") != "cancelled":
+        try:
+            import notify
+            notify.notify_event_holders(db, cancelled, "EVENT_CANCELLED", "cancelled")
+        except Exception:
+            pass
+    return cancelled
 
 
 @app.post("/api/organizer/events/{event_id}/ticket-types", status_code=status.HTTP_201_CREATED)

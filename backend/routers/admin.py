@@ -89,6 +89,20 @@ def suspend_event(
     except Exception:
         pass
 
+    try:
+        import notify
+        ev = ev_res.data[0]
+        if ev.get("organizer_id"):
+            notify.notify(
+                "PAYOUT_STATUS", str(ev["organizer_id"]),
+                {"event_title": ev.get("title") or "", "status": "SUSPENDED",
+                 "reason": payload.reason or "Suspended by platform administrator.",
+                 "path": f"/organizer/events/{event_id}"},
+                f"payout:{event_id}:suspended:{datetime.now(timezone.utc).isoformat()}",
+            )
+    except Exception:
+        pass
+
     return AdminSuspensionResponse(
         success=True,
         suspended=True,

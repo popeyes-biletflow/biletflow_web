@@ -243,6 +243,18 @@ async def activate_paid_sales(
             "paid_sales_active": True,
         }
 
+    try:
+        import notify
+        notify.notify(
+            "PAYOUT_STATUS", current_user.id,
+            {"event_title": event_row.get("title") or "", "status": "ACTIVE",
+             "reason": "Demo payout account verified, activation fee recorded (simulated).",
+             "path": f"/organizer/events/{event_id}"},
+            f"payout:{event_id}:active", email=current_user.email,
+        )
+    except Exception:
+        pass
+
     return {
         "status": "activated",
         "paid_sales_status": "ACTIVE",

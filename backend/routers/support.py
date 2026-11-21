@@ -59,7 +59,7 @@ ORGANIZER_PLATFORM_CATEGORIES = {"account", "payment", "technical"}
 # ---------------------------------------------------------------------------
 
 def emit_notification(user_id: str, type_: str, title: str, message: str, data: Optional[dict[str, Any]] = None) -> None:
-    """Emit recipient-scoped notification record in database."""
+    """Emit recipient-scoped notification record in database (+ FS-20 email copy)."""
     try:
         supabase.table("notifications").insert({
             "user_id": user_id,
@@ -69,6 +69,18 @@ def emit_notification(user_id: str, type_: str, title: str, message: str, data: 
             "data": data or {},
             "read": False,
         }).execute()
+    except Exception:
+        pass
+    # FS-20: то же уведомление письмом (в приложении оно уже записано выше)
+    try:
+        import uuid as _uuid
+        import notify
+        case_id = (data or {}).get("case_id")
+        notify.notify(
+            type_, user_id,
+            {"title": title, "message": message, "path": f"/support/{case_id}" if case_id else "/support"},
+            f"{type_}:{case_id}:{_uuid.uuid4()}", in_app=False,
+        )
     except Exception:
         pass
 
@@ -761,6 +773,15 @@ async def update_case_status(
         }).execute()
     except Exception:
         pass
+
+    if assign_requested and old_case.get("assigned_to") != current_user.id:
+        emit_notification(
+            user_id=requester_id,
+            type_="SUPPORT_CASE_ASSIGNED",
+            title=f"Your case was assigned: {old_case.get('subject')}",
+            message="A support agent is now working on your case.",
+            data={"case_id": case_id},
+        )
 
     emit_notification(
         user_id=requester_id,
