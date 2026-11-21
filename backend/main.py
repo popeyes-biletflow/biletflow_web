@@ -57,6 +57,7 @@ from routers.analytics import router as analytics_router
 from routers.event_history import router as event_history_router
 from routers.mobile import router as mobile_router
 from routers.my_orders import router as my_orders_router
+from routers.support_escalation import router as support_escalation_router
 app.include_router(promo_router)
 app.include_router(analytics_router)
 app.include_router(event_history_router)
@@ -66,6 +67,7 @@ app.include_router(organizer_router)
 app.include_router(orders_router)
 app.include_router(mobile_router)
 app.include_router(my_orders_router)
+app.include_router(support_escalation_router)
 app.include_router(admin_router)
 
 

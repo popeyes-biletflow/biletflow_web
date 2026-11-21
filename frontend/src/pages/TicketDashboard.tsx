@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '../context/AuthContext';
 import { formatKZT } from '../services/events';
+import { SupportDialog } from '../components/SupportDialog';
 import { checkoutApi, formatEventDateTime, ticketsApi, type MyOrder, type MyOrderTicket, type TicketStatus } from '../services/tickets';
 
 const BADGE: Record<string, string> = {
@@ -45,6 +46,10 @@ export function TicketDashboard() {
   const [cancelError, setCancelError] = useState('');
   const [sending, setSending] = useState(false);
   const [success, setSuccess] = useState('');
+
+  // обращение в поддержку по конкретному билету
+  const [helpTicket, setHelpTicket] = useState('');
+  const [helpLabel, setHelpLabel] = useState('');
 
   function load() {
     if (!token) return;
@@ -176,6 +181,10 @@ export function TicketDashboard() {
                         className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-semibold disabled:opacity-50">
                         {pdfBusy === tk.id ? t('common.loading') : t('ticket.downloadPdf')}
                       </button>
+                      <button onClick={() => { setHelpTicket(tk.id); setHelpLabel(o.event.title + ' · #' + tk.id.slice(0, 8)); }}
+                        className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-semibold">
+                        {t('support.helpShort')}
+                      </button>
                       {tk.status === 'ACTIVE' && (
                         <button onClick={() => { setCancelError(''); setCancelTicket(tk); setCancelOrder(o); }}
                           className="rounded-lg border border-red-200 px-3 py-1.5 text-xs font-semibold text-red-600">
@@ -190,6 +199,9 @@ export function TicketDashboard() {
           ))}
         </div>
       </div>
+
+      <SupportDialog open={helpTicket !== ''} onClose={() => setHelpTicket('')} context={{ ticket_id: helpTicket }}
+        contextLabel={helpLabel} defaultCategory="ticket_delivery" />
 
       {cancelTicket && cancelOrder && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true">

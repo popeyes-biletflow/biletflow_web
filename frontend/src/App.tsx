@@ -6,6 +6,7 @@ import { LanguageSwitcher } from './i18n/LanguageSwitcher';
 import { LoginForm } from './components/LoginForm';
 import { SignupForm } from './components/SignupForm';
 import { CheckoutModal } from './components/CheckoutModal';
+import { SupportDialog } from './components/SupportDialog';
 import { saveCampaignPromo } from './services/tickets';
 import { TicketDashboard } from './pages/TicketDashboard';
 import { EventsPage } from './pages/EventsPage';
@@ -16,6 +17,10 @@ import { TicketView } from './pages/TicketView';
 import { AuthCallbackPage, ForgotPasswordPage, ResetPasswordPage } from './pages/AuthPages';
 import { ProfilePage } from './pages/ProfilePage';
 import { OrderPage } from './pages/OrderPage';
+import { SupportPage } from './pages/SupportPage';
+import { SupportCasePage } from './pages/SupportCasePage';
+import { NotificationBell } from './components/NotificationBell';
+import { NotificationsProvider } from './context/NotificationsContext';
 import { RequireAuth } from './components/RequireAuth';
 import { getEvent, type EventItem } from './services/events';
 
@@ -31,6 +36,7 @@ function EventPurchase() {
   const promo = params.get('promo');
   const [event, setEvent] = useState<EventItem | null>(null);
   const [open, setOpen] = useState(false);
+  const [help, setHelp] = useState(false);
 
   useEffect(() => { getEvent(id, token).then(setEvent).catch(() => setEvent(null)); }, [id, token]);
 
@@ -52,6 +58,8 @@ function EventPurchase() {
           <button onClick={() => setOpen(true)}
             className="rounded-lg bg-emerald-600 px-6 py-3 font-semibold text-white hover:bg-emerald-700">{t('nav.buy')}</button>
           <CheckoutModal isOpen={open} onClose={() => setOpen(false)} event={event} />
+          <button onClick={() => setHelp(true)} className="ml-4 text-sm font-semibold text-blue-600 hover:underline">{t('support.askOrganizer')}</button>
+          <SupportDialog open={help} onClose={() => setHelp(false)} context={{ event_id: event.id }} contextLabel={event.title} defaultCategory="event_information" />
         </>
       ) : (
         <Link to={`/login?next=${next}`} className="inline-block rounded-lg border border-emerald-600 px-6 py-3 font-semibold text-emerald-700 hover:bg-emerald-50">
@@ -85,6 +93,8 @@ function MainApp() {
             <>
               <NavLink to="/tickets" className={navClass}>{t('nav.tickets')}</NavLink>
               {user.role === 'organizer' && <NavLink to="/organizer" className={navClass}>{t('nav.organizer')}</NavLink>}
+              <NavLink to="/support" className={navClass}>{t('nav.support')}</NavLink>
+              <NotificationBell />
               <NavLink to="/profile" className={navClass}>{t('nav.hello', { name: user.name || user.email })}</NavLink>
               <button onClick={async () => { await logout(); navigate('/events'); }}
                 className="rounded-md border border-gray-300 px-3 py-1 text-sm font-medium hover:bg-gray-100">{t('nav.logout')}</button>
@@ -112,6 +122,8 @@ function MainApp() {
         <Route path="/profile" element={<RequireAuth><ProfilePage /></RequireAuth>} />
         <Route path="/tickets" element={<RequireAuth><TicketDashboard /></RequireAuth>} />
         <Route path="/orders/:orderId" element={<RequireAuth><OrderPage /></RequireAuth>} />
+        <Route path="/support" element={<RequireAuth><SupportPage /></RequireAuth>} />
+        <Route path="/support/:caseId" element={<RequireAuth><SupportCasePage /></RequireAuth>} />
         <Route path="/tickets/:ticketId" element={<RequireAuth><TicketView /></RequireAuth>} />
         <Route path="/organizer" element={<RequireAuth roles={['organizer']}><OrganizerDashboard /></RequireAuth>} />
         <Route path="/organizer/events/new" element={<RequireAuth roles={['organizer']}><EventManageRoute /></RequireAuth>} />
@@ -125,9 +137,11 @@ function MainApp() {
 export default function App() {
   return (
     <AuthProvider>
-      <BrowserRouter>
-        <MainApp />
-      </BrowserRouter>
+      <NotificationsProvider>
+        <BrowserRouter>
+          <MainApp />
+        </BrowserRouter>
+      </NotificationsProvider>
     </AuthProvider>
   );
 }

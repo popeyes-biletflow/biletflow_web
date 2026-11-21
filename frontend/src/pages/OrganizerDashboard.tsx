@@ -8,6 +8,7 @@ import {
   organizerApi,
   type DashboardResponse, type EventAnalytics, type OrganizerEvent, type Phase,
 } from '../services/organizer';
+import { SupportDialog } from '../components/SupportDialog';
 import { SalesChart } from '../components/organizer/SalesChart';
 import { Notice, type NoticeState } from '../components/Notice';
 
@@ -45,6 +46,7 @@ export function OrganizerDashboard() {
   const { token, user } = useAuth();
   const { t: tr } = useTranslation();
   const navigate = useNavigate();
+  const [platformDialog, setPlatformDialog] = useState(false);
 
   const [dash, setDash] = useState<DashboardResponse | null>(null);
   const [events, setEvents] = useState<OrganizerEvent[]>([]);
@@ -106,10 +108,19 @@ export function OrganizerDashboard() {
           <h1 className="text-3xl font-extrabold">{tr('organizer.title')}</h1>
           <p className="text-sm text-gray-500">{tr('organizer.subtitle')}</p>
         </div>
-        <button onClick={() => navigate('/organizer/events/new')} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white">
-          + {tr('organizer.newEvent')}
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <Link to="/support" className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-semibold hover:bg-gray-50">
+            {tr('support.workspace')}
+          </Link>
+          <button onClick={() => setPlatformDialog(true)} className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-semibold hover:bg-gray-50">
+            {tr('support.contactPlatform')}
+          </button>
+          <button onClick={() => navigate('/organizer/events/new')} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white">
+            + {tr('organizer.newEvent')}
+          </button>
+        </div>
       </div>
+      <SupportDialog open={platformDialog} onClose={() => setPlatformDialog(false)} platform />
 
       {error && <Notice notice={{ kind: 'error', text: tr('organizer.loadFailed', { reason: error }) }} />}
       <Notice notice={notice} onClose={() => setNotice(null)} />
