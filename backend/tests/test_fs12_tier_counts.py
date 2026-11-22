@@ -1,3 +1,7 @@
+import os
+
+os.environ.setdefault("QR_SECRET", "test-secret")
+
 from datetime import datetime, timedelta, timezone
 
 from tests.test_pb18 import ORGANIZER, OTHER, event, run
