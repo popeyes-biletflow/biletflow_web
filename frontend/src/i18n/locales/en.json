@@ -59,7 +59,11 @@
     "noTiers": "Ticket prices will be announced soon.",
     "previewBanner": "Preview: this event is {{status}} · {{visibility}}. Only you can see this page in this state.",
     "cancelledBanner": "This event has been cancelled.",
-    "paidNotOnSale": "not on sale yet"
+    "paidNotOnSale": "not on sale yet",
+    "loadError": "Could not load this event. Check your connection and try again.",
+    "salesEnded": "sales ended",
+    "registrationNotOpen": "Registration opens {{date}}.",
+    "registrationClosed": "Registration for this event is closed."
   },
   "map": {
     "title": "Venue map",

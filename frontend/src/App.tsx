@@ -22,7 +22,7 @@ import { SupportCasePage } from './pages/SupportCasePage';
 import { NotificationBell } from './components/NotificationBell';
 import { NotificationsProvider } from './context/NotificationsContext';
 import { RequireAuth } from './components/RequireAuth';
-import { getEvent, type EventItem } from './services/events';
+import { useEvent } from './hooks/useEvent';
 
 const navClass = ({ isActive }: { isActive: boolean }) =>
   `rounded-md px-3 py-1 text-sm font-medium transition ${isActive ? 'bg-blue-600 text-white' : 'text-gray-700 hover:bg-gray-100'}`;
@@ -34,11 +34,9 @@ function EventPurchase() {
   const { t } = useTranslation();
   const [params] = useSearchParams();
   const promo = params.get('promo');
-  const [event, setEvent] = useState<EventItem | null>(null);
+  const { event } = useEvent(id, token);
   const [open, setOpen] = useState(false);
   const [help, setHelp] = useState(false);
-
-  useEffect(() => { getEvent(id, token).then(setEvent).catch(() => setEvent(null)); }, [id, token]);
 
   // Campaign QR: /events/:id?promo=CODE — сохраняем код и сразу открываем оформление
   useEffect(() => {
