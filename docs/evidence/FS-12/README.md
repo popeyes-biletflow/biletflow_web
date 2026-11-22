@@ -26,11 +26,11 @@ tier create/edit/hide, role-gated routes (`RequireAuth roles=['organizer']`), ba
 ## Acceptance
 | Criterion | Status |
 |---|---|
-| Counts available/reserved/sold/refunded/checked-in | PASS at API level (fake DB); UI not exercised in a browser |
+| Counts available/reserved/sold/refunded/checked-in | PASS at API level (fake DB); UI line verified later in `docs/evidence/FS-13/browser-check.js` (stubbed API) |
 | Save and reload values | NOT RUN (needs live backend) |
 | Inputs preserved on validation error | Source: form state is held in the editor and not reset on validation failure; NOT RUN in a browser |
 | Attendee denial / cross-organizer API denial | PASS (backend tests, 403) |
-| Cross-organizer URL denial in UI | Implemented; NOT RUN in a browser |
+| Cross-organizer URL denial in UI | PASS in `docs/evidence/FS-13/browser-check.js` (stubbed 403); not run against a live backend |
 
 ## Known gaps
 - `reserved` counts holds through the service client; a deployed database must allow it (the backend already uses that client for public reads).

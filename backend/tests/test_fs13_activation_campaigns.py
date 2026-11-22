@@ -1,3 +1,7 @@
+import os
+
+os.environ.setdefault("QR_SECRET", "test-secret")
+
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
