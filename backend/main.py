@@ -55,6 +55,7 @@ from promo import lookup_promo, redeem_promo, release_promo
 from orders import FEE_PERCENT
 from routers.analytics import router as analytics_router
 from routers.event_history import router as event_history_router
+from routers.organizer_finance import router as organizer_finance_router
 from routers.refunds import router as refunds_router
 from routers.mobile import router as mobile_router
 from routers.my_orders import router as my_orders_router
@@ -63,6 +64,7 @@ from routers.notify_admin import router as notify_admin_router
 app.include_router(promo_router)
 app.include_router(analytics_router)
 app.include_router(event_history_router)
+app.include_router(organizer_finance_router)
 app.include_router(refunds_router)
 app.include_router(tickets_router)
 app.include_router(support_router)
