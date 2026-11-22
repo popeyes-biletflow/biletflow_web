@@ -1,0 +1,937 @@
+From 56e09075403d3f78e7809e20ba606fcc40ca3c6e Mon Sep 17 00:00:00 2001
+From: Alpamys Beissenbek <alpabisen@gmail.com>
+Date: Sun, 22 Nov 2026 17:26:13 +0000
+Subject: [PATCH 4/5] FS-14: history, roster with safe CSV export, refund and
+ duplicate actions, analytics race fix
+
+---
+ docs/evidence/FS-14/README.md                 |  44 ++++++
+ docs/evidence/FS-14/browser-check.js          |  80 ++++++++++
+ .../components/organizer/AttendeesPanel.tsx   | 143 ++++++++++++++++++
+ .../src/components/organizer/HistoryPanel.tsx |  95 ++++++++++++
+ frontend/src/i18n/locales/en.json             |  49 +++++-
+ frontend/src/i18n/locales/kk.json             |  49 +++++-
+ frontend/src/i18n/locales/ru.json             |  49 +++++-
+ frontend/src/pages/EventManagePage.tsx        |  51 ++++++-
+ frontend/src/pages/OrganizerDashboard.tsx     |  25 +--
+ frontend/src/services/__tests__/csv.test.ts   |  19 +++
+ frontend/src/services/csv.ts                  |  23 +++
+ frontend/src/services/organizer.ts            |  59 +++++++-
+ 12 files changed, 662 insertions(+), 24 deletions(-)
+ create mode 100644 docs/evidence/FS-14/README.md
+ create mode 100644 docs/evidence/FS-14/browser-check.js
+ create mode 100644 frontend/src/components/organizer/AttendeesPanel.tsx
+ create mode 100644 frontend/src/components/organizer/HistoryPanel.tsx
+ create mode 100644 frontend/src/services/__tests__/csv.test.ts
+ create mode 100644 frontend/src/services/csv.ts
+
+diff --git a/docs/evidence/FS-14/README.md b/docs/evidence/FS-14/README.md
+new file mode 100644
+index 0000000..1899e5c
+--- /dev/null
++++ b/docs/evidence/FS-14/README.md
+@@ -0,0 +1,44 @@
++# FS-14 evidence: organizer operations
++
++Base: `feature/FS-13-activation-campaigns`. Roster, refunds and enhanced activity depend on open PRs #25 (refunds, ibragim-m) and #26 (attendees/metrics/activity, ibragim-m); they are not merged and not assumed deployed.
++
++## Pre-existing (not new work)
++Dashboard with phase tabs (upcoming / active / completed / cancelled), per-event analytics with date and ticket-type filters, `GET /api/organizer/events/{id}/history`, `POST /api/organizer/events/{id}/duplicate` (RPC creates a draft; copies details and ticket types only, paid sales reset), organizer-only authorization in the RPCs.
++Roster API, refund API and refund policy are #25/#26 and are not reimplemented here.
++
++## Changes in this ticket
++| File | Change |
++|---|---|
++| `OrganizerDashboard.tsx` | Analytics filter race fixed: results are bound to the filter set that requested them, late responses ignored, an old filter's numbers are never shown as the current ones, errors replace stale data. |
++| `HistoryPanel.tsx` (tab "History") | Filter by action and date range, newest first, paged 20 at a time, retry on failure, readable after cancellation (history is retained). Uses the existing history endpoint; paging/filtering is client-side because that endpoint returns the whole list. |
++| `EventManagePage.tsx` | "Duplicate" action (optional title and new start) opens the new editable draft; hint states what is not copied. New tabs History and Attendees. |
++| `AttendeesPanel.tsx` (tab "Attendees") | Roster with status filter and server pagination (50), stale-response protection, CSV export of all rows for the active filter (same columns as the table), refund-order action with confirmation. Shown only when the API's `/openapi.json` lists #26's attendees route; refund button only when #25's refund route is listed. Otherwise a notice says what is missing. |
++| `services/csv.ts` + tests | RFC 4180 quoting, formula-injection guard (`= + - @ TAB CR`), BOM, CRLF. |
++| `services/organizer.ts`, locales | Client methods/types; kk/ru/en strings. |
++
++Privacy: the roster and CSV include name, ticket type, status and check-in time. Email is returned by the #26 endpoint but is not displayed or exported.
++
++## Commands run
++| Command | Result |
++|---|---|
++| `npm run build` | exit 0 |
++| `npm test` | 12 passed (9 events/calendar + 3 CSV) |
++| `npm run lint` | exit 0, no warnings in new files; remaining warnings pre-date this work |
++| `node docs/evidence/FS-14/browser-check.js` (Playwright, Vite dev, **stubbed API**) | 19/19 PASS, both with and without the roster/refund routes. The analytics race check was also run against the previous dashboard code and FAILED there, so it detects the bug. |
++
++## Acceptance
++| Criterion | Status |
++|---|---|
++| Phase navigation, retained/cancelled records | Pre-existing; not re-exercised against a real backend |
++| Filtered analytics without out-of-order results | PASS (stubbed, regression-checked) |
++| Paginated/filterable history | PASS (stubbed); client-side paging, not server-side (see gaps) |
++| Duplicate opens a new editable draft, copies no attendees/orders/payments/support/history | UI PASS (stubbed); the copy rules are in the existing SQL RPC (`007_history_duplicate.sql`), not executed here |
++| Authorized roster + matching CSV; CSV escaping/formula safety/minimization | PASS (stubbed + unit tests); BLOCKED for real data until #26 is merged and migrations 013-017 applied |
++| Refund updates ticket state/totals on reload | BLOCKED until #25 is merged and its migrations applied; UI flow verified with a stub only |
++| Cross-organizer denial | Server-side in the RPCs (`NOT_EVENT_OWNER`) and the existing owner checks; not run against a database |
++| Refund policy copied on duplicate | BLOCKED (#26) |
++
++## Known gaps
++- History is not server-paginated (#26 adds `/events/{id}/activity` with offset/limit and filters; switch to it after merge).
++- Refund is per order; the confirmation says so.
++- Real-database verification was not performed.
+diff --git a/docs/evidence/FS-14/browser-check.js b/docs/evidence/FS-14/browser-check.js
+new file mode 100644
+index 0000000..2737c34
+--- /dev/null
++++ b/docs/evidence/FS-14/browser-check.js
+@@ -0,0 +1,80 @@
++const { chromium } = require('playwright');
++const fs = require('fs');
++const base = 'http://localhost:5199';
++const EV = { id: 'ev1', title: 'Jazz', status: 'published', visibility: 'public', starts_at: '2026-12-01T14:00:00+05:00', timezone: 'Asia/Almaty', venue_name: 'Hall', paid_sales_status: 'NONE' };
++const hist = Array.from({ length: 25 }, (_, i) => ({ id: i + 1, action: i % 5 === 0 ? 'EVENT_PUBLISHED' : 'ORDER_PAID', created_at: new Date(Date.UTC(2026, 10, 1 + i)).toISOString(), performed_by: 'u', performed_by_name: 'Org', metadata: { n: i } }));
++const att = (n, o = {}) => ({ ticket_id: 'tk' + n, attendee_name: 'P' + n, attendee_email: `p${n}@example.com`, ticket_type: 'GA', status: 'valid', order_id: 'o' + n, checked_in_at: null, created_at: null, ...o });
++const all = Array.from({ length: 60 }, (_, i) => att(i + 1));
++all[1] = att(2, { attendee_name: '=HYPERLINK("http://x")' });
++const dash = (title) => ({ totals: { events: 1, by_phase: { upcoming: 1, active: 0, completed: 0, cancelled: 0 }, tickets_sold: 0, capacity: 0, capacity_unlimited_events: 1, gross_kzt: 0, discounts_kzt: 0, refunds_kzt: 0, net_kzt: 0, checked_in: 0, percent_checked_in: null, promo_redemptions: 0 }, events: [an('unfiltered')] });
++const an = (tag, sold = 0) => ({ event: { id: 'ev1', title: 'Jazz ' + tag, status: 'published', phase: 'upcoming', starts_at: EV.starts_at, ends_at: null, timezone: 'Asia/Almaty', paid_sales_status: 'NONE' }, filters: {}, capacity: { total: 10, sold, remaining: 10 - sold, percent_sold: sold * 10 }, revenue: { currency: 'KZT', simulated: true, gross_kzt: 0, discounts_kzt: 0, fees_kzt: 0, refunds_kzt: 0, net_kzt: 0, orders: 0 }, attendance: { registered: 0, checked_in: 0, absent: 0, percent_checked_in: null }, cancellations: { cancelled: 0, refunded: 0 }, sales_over_time: [], by_ticket_type: [{ ticket_type_id: 't1', name: 'GA', price_kzt: 0, capacity: 10, sold: 0, remaining: 10, percent_sold: 0, revenue_kzt: 0, checked_in: 0, is_hidden: false }], campaigns: [] });
++(async () => {
++  const b = await chromium.launch(); const res = []; const ok = (n, c) => res.push((c ? 'PASS ' : 'FAIL ') + n);
++  for (const roster of [false, true]) {
++    const ctx = await b.newContext({ viewport: { width: 1100, height: 900 }, acceptDownloads: true }); const p = await ctx.newPage();
++    await p.addInitScript(() => { localStorage.setItem('lang', 'en'); localStorage.setItem('auth_token', 'tok');
++      localStorage.setItem('auth_user', JSON.stringify({ id: 'org-1', email: 'o@example.com', name: 'o', role: 'organizer' })); });
++    const t = `[roster api=${roster}] `; let dupBody = null, refunded = null, attendeeCalls = [];
++    const paths = roster ? { '/api/organizer/events/{event_id}/attendees': {}, '/api/organizer/orders/{order_id}/refund': {} } : {};
++    await p.route('**/openapi.json', r => r.fulfill({ json: { paths } }));
++    await p.route('**/api/users/me', r => r.fulfill({ json: { id: 'org-1', email: 'o@example.com', full_name: 'O', role: 'organizer' } }));
++    await p.route('**/api/organizer/events', r => r.fulfill({ json: [EV, { ...EV, id: 'ev2', title: 'Jazz (copy)', status: 'draft' }] }));
++    await p.route('**/api/organizer/events/ev2/ticket-types', r => r.fulfill({ json: [] }));
++    await p.route('**/api/organizer/events/ev1/ticket-types', r => r.fulfill({ json: [] }));
++    await p.route('**/api/organizer/events/ev1/history', r => r.fulfill({ json: hist }));
++    await p.route('**/api/organizer/events/ev1/duplicate', async r => { dupBody = JSON.parse(r.request().postData()); await r.fulfill({ status: 201, json: { event_id: 'ev2', source_event_id: 'ev1', status: 'draft', ticket_types_copied: 0 } }); });
++    await p.route('**/api/organizer/events/ev1/attendees**', async r => {
++      const u = new URL(r.request().url()); const st = u.searchParams.get('status'); const off = +u.searchParams.get('offset'); const lim = +u.searchParams.get('limit');
++      attendeeCalls.push(`${st}|${off}`);
++      if (st === 'refunded') await new Promise(s => setTimeout(s, 1200));
++      const pool = st === 'refunded' ? [att(99, { status: 'refunded' })] : all;
++      await r.fulfill({ json: { total: pool.length, limit: lim, offset: off, items: pool.slice(off, off + lim) } });
++    });
++    await p.route('**/api/organizer/orders/*/refund', async r => { refunded = r.request().url(); await r.fulfill({ json: { ok: true } }); });
++    await p.route('**/api/organizer/dashboard', r => r.fulfill({ json: dash() }));
++    await p.route('**/api/organizer/events/ev1/analytics**', async r => {
++      const q = new URL(r.request().url()).searchParams; const slow = q.get('date_from') === '2026-11-01' && !q.get('date_to');
++      if (slow) await new Promise(s => setTimeout(s, 1500));
++      await r.fulfill({ json: an(slow ? 'FROM-NOV1' : q.get('date_to') ? 'TO-NOV30' : 'plain', slow ? 7 : 3) });
++    });
++
++    await p.goto(base + '/organizer/events/ev1?tab=history'); await p.getByText('Showing 20 of 25').waitFor();
++    ok(t + 'history paginates (20 of 25) newest first', await p.locator('ol li').first().innerText().then(x => x.includes('Nov 25') || x.includes('25')));
++    await p.getByRole('button', { name: 'Show more' }).click(); await p.getByText('Showing 25 of 25').waitFor(); ok(t + 'history show more', true);
++    await p.getByLabel('Action').selectOption('EVENT_PUBLISHED'); await p.getByText('Showing 5 of 5').waitFor(); ok(t + 'history action filter', true);
++
++    await p.goto(base + '/organizer/events/ev1');
++    await p.getByRole('button', { name: 'Duplicate' }).click(); await p.getByRole('button', { name: 'Create draft copy' }).click();
++    await p.waitForURL('**/organizer/events/ev2'); ok(t + 'duplicate -> new draft route; payload has title only', dupBody.title === 'Jazz (copy)' && !dupBody.starts_at);
++
++    await p.goto(base + '/organizer/events/ev1?tab=attendees');
++    if (!roster) {
++      await p.getByText(/roster API on the server, which is not available yet/).waitFor(); ok(t + 'blocked notice, no fake roster', !(await p.locator('table').count()));
++    } else {
++      await p.getByText('1–50 of 60').waitFor(); ok(t + 'roster paginated 50/60', (await p.locator('tbody tr').count()) === 50);
++      ok(t + 'no email column/contact data shown', !(await p.getByText('example.com').count()));
++      await p.getByRole('button', { name: 'Next' }).click(); await p.getByText('51–60 of 60').waitFor(); ok(t + 'next page', (await p.locator('tbody tr').count()) === 10);
++      await p.getByRole('button', { name: 'Previous' }).click(); await p.getByText('1–50 of 60').waitFor();
++      await p.getByLabel('Status').selectOption('refunded'); await p.getByLabel('Status').selectOption('');
++      await p.getByText('1–50 of 60').waitFor(); await p.waitForTimeout(1800);
++      ok(t + 'slow refunded response does not overwrite newer unfiltered list', (await p.locator('tbody tr').count()) === 50 && !(await p.getByText('P99').count()));
++      const [dl] = await Promise.all([p.waitForEvent('download'), p.getByRole('button', { name: 'Export CSV' }).click()]);
++      const csv = fs.readFileSync(await dl.path(), 'utf8');
++      ok(t + 'CSV has all 60 rows + header, same columns', csv.trim().split('\r\n').length === 61 && csv.includes('Name,Ticket type,Status,Checked in'));
++      ok(t + 'CSV neutralises formula and excludes email', csv.includes(`"'=HYPERLINK(""http://x"")"`) && !csv.includes('@example.com'));
++      p.once('dialog', d => d.accept());
++      await p.getByRole('button', { name: 'Refund order' }).first().click(); await p.getByText('Order refunded.').waitFor();
++      ok(t + 'refund calls order endpoint then reloads', /orders\/o1\/refund$/.test(refunded));
++    }
++    if (!roster) {
++      await p.goto(base + '/organizer'); await p.getByRole('button', { name: 'Analytics' }).first().click(); await p.getByText('Analytics', { exact: false }).first().waitFor();
++      await p.getByLabel('From').fill('2026-11-01'); await p.getByLabel('To').fill('2026-11-30');
++      await p.getByText('Sold').first().waitFor(); await p.waitForTimeout(2200);
++      const heading = await p.locator('h2').filter({ hasText: 'Jazz' }).first().innerText();
++      ok(t + 'analytics: slow earlier filter response does not overwrite newer filters', !(await p.getByText('7 / 10').count()) && (await p.getByText('3 / 10').count()) >= 1);
++    }
++    ok(t + 'no horizontal scroll', await p.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
++    await ctx.close();
++  }
++  console.log(res.join('\n')); await b.close();
++})().catch(e => { console.error(e); process.exit(1); });
+diff --git a/frontend/src/components/organizer/AttendeesPanel.tsx b/frontend/src/components/organizer/AttendeesPanel.tsx
+new file mode 100644
+index 0000000..d348140
+--- /dev/null
++++ b/frontend/src/components/organizer/AttendeesPanel.tsx
+@@ -0,0 +1,143 @@
++import { useEffect, useState } from 'react';
++import { useTranslation } from 'react-i18next';
++import { apiSupports, organizerApi, type Attendee, type AttendeePage } from '../../services/organizer';
++import { downloadCsv, toCsv } from '../../services/csv';
++import { formatEventDateTime } from '../../services/tickets';
++import { Notice, type NoticeState } from '../Notice';
++import { inputClass } from './EventEditor';
++
++const PAGE = 50;
++const STATUSES = ['valid', 'checked_in', 'refunded', 'cancelled'];
++
++export function AttendeesPanel({ token, eventId, title, timezone }: { token: string; eventId: string; title: string; timezone: string }) {
++  const { t } = useTranslation();
++  const [supported, setSupported] = useState<boolean | null>(null);
++  const [canRefund, setCanRefund] = useState(false);
++  const [status, setStatus] = useState('');
++  const [offset, setOffset] = useState(0);
++  const [reloadKey, setReloadKey] = useState(0);
++  const [result, setResult] = useState<{ key: string; page: AttendeePage | null; failed: boolean } | null>(null);
++  const [busy, setBusy] = useState(false);
++  const [notice, setNotice] = useState<NoticeState>(null);
++
++  useEffect(() => {
++    apiSupports('/api/organizer/events/{event_id}/attendees').then(setSupported);
++    apiSupports('/api/organizer/orders/{order_id}/refund').then(setCanRefund);
++  }, []);
++
++  const key = `${eventId}|${status}|${offset}|${reloadKey}`;
++  useEffect(() => {
++    if (!supported) return;
++    let live = true;
++    organizerApi.attendees(token, eventId, { status, limit: PAGE, offset })
++      .then((page) => { if (live) setResult({ key, page, failed: false }); })
++      .catch(() => { if (live) setResult({ key, page: null, failed: true }); });
++    return () => { live = false; };
++  }, [token, eventId, status, offset, reloadKey, supported, key]);
++
++  if (supported === null) return <p role="status" className="text-sm text-gray-500">{t('common.loading')}</p>;
++  if (!supported) return <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-900">{t('roster.unavailable')}</p>;
++
++  const current = result?.key === key ? result : null;
++  const page = current?.page ?? null;
++  const statusLabel = (s: string) => t(`roster.status.${s}`, { defaultValue: s });
++
++  const row = (a: Attendee) => [
++    a.attendee_name ?? '', a.ticket_type ?? '', statusLabel(a.status),
++    a.checked_in_at ? formatEventDateTime(a.checked_in_at, timezone) : '',
++  ];
++
++  async function exportCsv() {
++    setBusy(true);
++    setNotice(null);
++    try {
++      const rows: Attendee[] = [];
++      for (let off = 0; ; off += 200) {
++        const chunk = await organizerApi.attendees(token, eventId, { status, limit: 200, offset: off });
++        rows.push(...chunk.items);
++        if (rows.length >= chunk.total || chunk.items.length === 0) break;
++      }
++      const header = [t('roster.name'), t('roster.ticketType'), t('roster.statusCol'), t('roster.checkedIn')];
++      downloadCsv(`${title.replace(/[^\p{L}\p{N}]+/gu, '-').toLowerCase() || 'event'}-roster.csv`, toCsv(header, rows.map(row)));
++      setNotice({ kind: 'success', text: t('roster.exported', { count: rows.length }) });
++    } catch (e) {
++      setNotice({ kind: 'error', text: t('roster.exportFailed', { reason: (e as Error).message }) });
++    } finally {
++      setBusy(false);
++    }
++  }
++
++  async function refund(a: Attendee) {
++    if (!a.order_id || !window.confirm(t('roster.confirmRefund', { name: a.attendee_name ?? '' }))) return;
++    setBusy(true);
++    setNotice(null);
++    try {
++      await organizerApi.refundOrder(token, a.order_id);
++      setNotice({ kind: 'success', text: t('roster.refunded') });
++      setReloadKey((k) => k + 1);
++    } catch (e) {
++      setNotice({ kind: 'error', text: t('roster.refundFailed', { reason: (e as Error).message }) });
++    } finally {
++      setBusy(false);
++    }
++  }
++
++  return (
++    <div className="space-y-4">
++      <Notice notice={notice} onClose={() => setNotice(null)} />
++      {!canRefund && <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-900">{t('roster.refundUnavailable')}</p>}
++      <div className="flex flex-wrap items-end justify-between gap-3">
++        <label className="text-xs">{t('roster.statusCol')}<br />
++          <select value={status} onChange={(e) => { setStatus(e.target.value); setOffset(0); }} className={`${inputClass} mt-0`}>
++            <option value="">{t('filters.all')}</option>
++            {STATUSES.map((s) => <option key={s} value={s}>{statusLabel(s)}</option>)}
++          </select>
++        </label>
++        <button onClick={exportCsv} disabled={busy || !page || page.total === 0}
++          className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-semibold hover:bg-gray-50 disabled:opacity-50">{t('roster.export')}</button>
++      </div>
++      <p className="text-xs text-gray-500">{t('roster.privacy')}</p>
++
++      {current?.failed && (
++        <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-700">
++          {t('roster.loadFailed')} <button onClick={() => setReloadKey((k) => k + 1)} className="font-semibold underline">{t('common.retry')}</button>
++        </p>
++      )}
++      {!current && <p role="status" className="text-sm text-gray-500">{t('common.loading')}</p>}
++      {page && page.items.length === 0 && <p className="text-sm text-gray-500">{t('roster.empty')}</p>}
++
++      {page && page.items.length > 0 && (
++        <div className="overflow-x-auto">
++          <table className="w-full min-w-[560px] text-left text-sm">
++            <thead className="text-xs text-gray-500">
++              <tr><th className="p-2">{t('roster.name')}</th><th className="p-2">{t('roster.ticketType')}</th><th className="p-2">{t('roster.statusCol')}</th><th className="p-2">{t('roster.checkedIn')}</th><th className="p-2" /></tr>
++            </thead>
++            <tbody>
++              {page.items.map((a) => (
++                <tr key={a.ticket_id} className="border-t">
++                  <td className="p-2">{a.attendee_name || '—'}</td>
++                  <td className="p-2">{a.ticket_type || '—'}</td>
++                  <td className="p-2">{statusLabel(a.status)}</td>
++                  <td className="p-2">{a.checked_in_at ? formatEventDateTime(a.checked_in_at, timezone) : '—'}</td>
++                  <td className="p-2 text-right">
++                    {canRefund && a.order_id && a.status === 'valid' && (
++                      <button onClick={() => refund(a)} disabled={busy} className="text-xs font-semibold text-red-600">{t('roster.refund')}</button>
++                    )}
++                  </td>
++                </tr>
++              ))}
++            </tbody>
++          </table>
++        </div>
++      )}
++
++      {page && page.total > PAGE && (
++        <div className="flex items-center justify-between text-xs text-gray-500">
++          <button onClick={() => setOffset(Math.max(0, offset - PAGE))} disabled={offset === 0} className="font-semibold text-blue-600 disabled:opacity-40">{t('roster.prev')}</button>
++          <span>{t('roster.range', { from: offset + 1, to: Math.min(offset + PAGE, page.total), total: page.total })}</span>
++          <button onClick={() => setOffset(offset + PAGE)} disabled={offset + PAGE >= page.total} className="font-semibold text-blue-600 disabled:opacity-40">{t('roster.next')}</button>
++        </div>
++      )}
++    </div>
++  );
++}
+diff --git a/frontend/src/components/organizer/HistoryPanel.tsx b/frontend/src/components/organizer/HistoryPanel.tsx
+new file mode 100644
+index 0000000..5f9d215
+--- /dev/null
++++ b/frontend/src/components/organizer/HistoryPanel.tsx
+@@ -0,0 +1,95 @@
++import { useEffect, useMemo, useState } from 'react';
++import { useTranslation } from 'react-i18next';
++import { formatEventDateTime } from '../../services/tickets';
++import { organizerApi, type HistoryEntry } from '../../services/organizer';
++import { inputClass } from './EventEditor';
++
++const PAGE = 20;
++
++const summary = (m: HistoryEntry['metadata']) =>
++  Object.entries(m ?? {})
++    .filter(([, v]) => ['string', 'number', 'boolean'].includes(typeof v))
++    .slice(0, 6)
++    .map(([k, v]) => `${k}: ${v}`)
++    .join(' · ');
++
++export function HistoryPanel({ token, eventId, timezone }: { token: string; eventId: string; timezone: string }) {
++  const { t } = useTranslation();
++  const [entries, setEntries] = useState<HistoryEntry[] | null>(null);
++  const [failed, setFailed] = useState(false);
++  const [reloadKey, setReloadKey] = useState(0);
++  const [action, setAction] = useState('');
++  const [from, setFrom] = useState('');
++  const [to, setTo] = useState('');
++  const [shown, setShown] = useState(PAGE);
++
++  useEffect(() => {
++    let live = true;
++    organizerApi.history(token, eventId)
++      .then((rows) => { if (live) { setEntries(rows); setFailed(false); } })
++      .catch(() => { if (live) setFailed(true); });
++    return () => { live = false; };
++  }, [token, eventId, reloadKey]);
++
++  const actions = useMemo(() => [...new Set((entries ?? []).map((e) => e.action))].sort(), [entries]);
++  const filtered = useMemo(() => {
++    const lo = from ? Date.parse(`${from}T00:00:00`) : -Infinity;
++    const hi = to ? Date.parse(`${to}T23:59:59.999`) : Infinity;
++    return (entries ?? [])
++      .filter((e) => (!action || e.action === action) && Date.parse(e.created_at) >= lo && Date.parse(e.created_at) <= hi)
++      .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
++  }, [entries, action, from, to]);
++
++  const label = (a: string) => t(`history.actions.${a}`, { defaultValue: a.toLowerCase().replace(/_/g, ' ') });
++  const reset = () => { setAction(''); setFrom(''); setTo(''); setShown(PAGE); };
++
++  return (
++    <div className="space-y-4">
++      <div className="flex flex-wrap items-end gap-3">
++        <label className="text-xs">{t('history.action')}<br />
++          <select value={action} onChange={(e) => { setAction(e.target.value); setShown(PAGE); }} className={`${inputClass} mt-0`}>
++            <option value="">{t('filters.all')}</option>
++            {actions.map((a) => <option key={a} value={a}>{label(a)}</option>)}
++          </select>
++        </label>
++        <label className="text-xs">{t('analytics.dateFrom')}<br />
++          <input type="date" value={from} onChange={(e) => { setFrom(e.target.value); setShown(PAGE); }} className={`${inputClass} mt-0`} />
++        </label>
++        <label className="text-xs">{t('analytics.dateTo')}<br />
++          <input type="date" value={to} onChange={(e) => { setTo(e.target.value); setShown(PAGE); }} className={`${inputClass} mt-0`} />
++        </label>
++        {(action || from || to) && <button onClick={reset} className="pb-2 text-xs font-semibold text-blue-600">{t('analytics.reset')}</button>}
++      </div>
++
++      {failed && (
++        <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-700">
++          {t('history.loadFailed')} <button onClick={() => setReloadKey((k) => k + 1)} className="font-semibold underline">{t('common.retry')}</button>
++        </p>
++      )}
++      {!failed && entries === null && <p role="status" className="text-sm text-gray-500">{t('common.loading')}</p>}
++      {entries && filtered.length === 0 && <p className="text-sm text-gray-500">{entries.length === 0 ? t('history.empty') : t('history.noMatch')}</p>}
++
++      <ol className="divide-y rounded-lg border border-gray-200">
++        {filtered.slice(0, shown).map((e) => (
++          <li key={String(e.id)} className="p-3 text-sm">
++            <div className="flex flex-wrap justify-between gap-2">
++              <span className="font-medium">{label(e.action)}</span>
++              <time className="text-xs text-gray-500" dateTime={e.created_at}>{formatEventDateTime(e.created_at, timezone)}</time>
++            </div>
++            <p className="text-xs text-gray-500">{e.performed_by_name || t('history.system')}</p>
++            {summary(e.metadata) && <p className="mt-1 break-words text-xs text-gray-600">{summary(e.metadata)}</p>}
++          </li>
++        ))}
++      </ol>
++
++      {entries && filtered.length > 0 && (
++        <div className="flex items-center justify-between text-xs text-gray-500">
++          <span>{t('history.showing', { shown: Math.min(shown, filtered.length), total: filtered.length })}</span>
++          {shown < filtered.length && (
++            <button onClick={() => setShown((n) => n + PAGE)} className="font-semibold text-blue-600">{t('history.more')}</button>
++          )}
++        </div>
++      )}
++    </div>
++  );
++}
+diff --git a/frontend/src/i18n/locales/en.json b/frontend/src/i18n/locales/en.json
+index 6f6fc08..f4ba2c6 100644
+--- a/frontend/src/i18n/locales/en.json
++++ b/frontend/src/i18n/locales/en.json
+@@ -209,7 +209,9 @@
+       "details": "Details",
+       "tickets": "Ticket types",
+       "paid": "Paid sales",
+-      "campaigns": "Campaigns"
++      "campaigns": "Campaigns",
++      "attendees": "Attendees",
++      "history": "History"
+     },
+     "done": {
+       "publish": "Event published.",
+@@ -221,7 +223,14 @@
+       "unpublish": "Could not unpublish: {{reason}}",
+       "cancel": "Could not cancel: {{reason}}"
+     },
+-    "noAccess": "This event does not exist or you do not manage it."
++    "noAccess": "This event does not exist or you do not manage it.",
++    "duplicate": "Duplicate",
++    "duplicateTitle": "Duplicate as a new draft",
++    "duplicateHint": "Copies the details and ticket types only. Attendees, orders, payments, support cases and history are not copied; paid sales start inactive.",
++    "duplicateStart": "New start (optional)",
++    "duplicateConfirm": "Create draft copy",
++    "duplicateFailed": "Could not duplicate the event: {{reason}}",
++    "copySuffix": "(copy)"
+   },
+   "ticketTypes": {
+     "empty": "No ticket types yet. Add a free or paid one.",
+@@ -715,5 +724,41 @@
+       "ends": "Choose when the campaign expires.",
+       "window": "The expiry must be after the start."
+     }
++  },
++  "history": {
++    "action": "Action",
++    "loadFailed": "Could not load the history.",
++    "empty": "No recorded activity yet.",
++    "noMatch": "No entries match the filters.",
++    "system": "System",
++    "showing": "Showing {{shown}} of {{total}}",
++    "more": "Show more"
++  },
++  "roster": {
++    "unavailable": "The attendee roster and CSV export need the organizer roster API on the server, which is not available yet.",
++    "refundUnavailable": "Refunds need the refund API on the server, which is not available yet. Refund buttons are hidden until it is.",
++    "name": "Name",
++    "ticketType": "Ticket type",
++    "statusCol": "Status",
++    "checkedIn": "Checked in",
++    "status": {
++      "valid": "Valid",
++      "checked_in": "Checked in",
++      "refunded": "Refunded",
++      "cancelled": "Cancelled"
++    },
++    "export": "Export CSV",
++    "exported": "Exported {{count}} attendees.",
++    "exportFailed": "Export failed: {{reason}}",
++    "privacy": "The roster and CSV contain names, ticket type, status and check-in time only; contact details are not exported.",
++    "loadFailed": "Could not load the roster.",
++    "empty": "No attendees.",
++    "refund": "Refund order",
++    "confirmRefund": "Refund the whole order that includes {{name}}? Every ticket in that order is invalidated. This is a simulated refund.",
++    "refunded": "Order refunded.",
++    "refundFailed": "Refund failed: {{reason}}",
++    "prev": "Previous",
++    "next": "Next",
++    "range": "{{from}}–{{to}} of {{total}}"
+   }
+ }
+diff --git a/frontend/src/i18n/locales/kk.json b/frontend/src/i18n/locales/kk.json
+index 144b10d..bbad48d 100644
+--- a/frontend/src/i18n/locales/kk.json
++++ b/frontend/src/i18n/locales/kk.json
+@@ -209,7 +209,9 @@
+       "details": "Мәліметтер",
+       "tickets": "Билет түрлері",
+       "paid": "Ақылы сату",
+-      "campaigns": "Науқандар"
++      "campaigns": "Науқандар",
++      "attendees": "Қатысушылар",
++      "history": "Тарих"
+     },
+     "done": {
+       "publish": "Іс-шара жарияланды.",
+@@ -221,7 +223,14 @@
+       "unpublish": "Жариялауды тоқтату мүмкін болмады: {{reason}}",
+       "cancel": "Тоқтату мүмкін болмады: {{reason}}"
+     },
+-    "noAccess": "Мұндай іс-шара жоқ немесе сіз оны басқармайсыз."
++    "noAccess": "Мұндай іс-шара жоқ немесе сіз оны басқармайсыз.",
++    "duplicate": "Көшірме жасау",
++    "duplicateTitle": "Жаңа жоба ретінде көшіру",
++    "duplicateHint": "Тек іс-шара деректері мен билет түрлері көшіріледі. Қатысушылар, тапсырыстар, төлемдер, өтініштер және тарих көшірілмейді; ақылы сатылым белсенді емес.",
++    "duplicateStart": "Жаңа басталу (міндетті емес)",
++    "duplicateConfirm": "Жоба көшірмесін құру",
++    "duplicateFailed": "Іс-шараны көшіру мүмкін болмады: {{reason}}",
++    "copySuffix": "(көшірме)"
+   },
+   "ticketTypes": {
+     "empty": "Билет түрлері әлі жоқ. Тегін немесе ақылы түрін қосыңыз.",
+@@ -708,5 +717,41 @@
+       "ends": "Науқан қашан аяқталатынын таңдаңыз.",
+       "window": "Аяқталуы басталуынан кейін болуы керек."
+     }
++  },
++  "history": {
++    "action": "Әрекет",
++    "loadFailed": "Тарихты жүктеу мүмкін болмады.",
++    "empty": "Жазбалар әлі жоқ.",
++    "noMatch": "Сүзгілерге сәйкес жазба жоқ.",
++    "system": "Жүйе",
++    "showing": "{{total}} ішінен {{shown}} көрсетілді",
++    "more": "Тағы көрсету"
++  },
++  "roster": {
++    "unavailable": "Қатысушылар тізімі мен CSV экспорты серверде ұйымдастырушы тізімінің API-ін талап етеді, ол әзірге жоқ.",
++    "refundUnavailable": "Қайтару үшін серверде қайтару API-і қажет, ол әзірге жоқ. Қайтару батырмалары жасырылған.",
++    "name": "Аты",
++    "ticketType": "Билет түрі",
++    "statusCol": "Күйі",
++    "checkedIn": "Кірді",
++    "status": {
++      "valid": "Жарамды",
++      "checked_in": "Кірді",
++      "refunded": "Қайтарылды",
++      "cancelled": "Бас тартылды"
++    },
++    "export": "CSV экспорты",
++    "exported": "Қатысушылар экспортталды: {{count}}.",
++    "exportFailed": "Экспорт сәтсіз: {{reason}}",
++    "privacy": "Тізім мен CSV тек атын, билет түрін, күйін және кіру уақытын қамтиды; байланыс деректері экспортталмайды.",
++    "loadFailed": "Тізімді жүктеу мүмкін болмады.",
++    "empty": "Қатысушылар жоқ.",
++    "refund": "Тапсырысты қайтару",
++    "confirmRefund": "{{name}} кіретін тапсырыстың бәрін қайтару керек пе? Тапсырыстағы барлық билет жарамсыз болады. Бұл имитацияланған қайтару.",
++    "refunded": "Тапсырыс қайтарылды.",
++    "refundFailed": "Қайтару сәтсіз: {{reason}}",
++    "prev": "Алдыңғы",
++    "next": "Келесі",
++    "range": "{{total}} ішінен {{from}}–{{to}}"
+   }
+ }
+diff --git a/frontend/src/i18n/locales/ru.json b/frontend/src/i18n/locales/ru.json
+index 738b0ce..6d9ba19 100644
+--- a/frontend/src/i18n/locales/ru.json
++++ b/frontend/src/i18n/locales/ru.json
+@@ -211,7 +211,9 @@
+       "details": "Детали",
+       "tickets": "Типы билетов",
+       "paid": "Платные продажи",
+-      "campaigns": "Кампании"
++      "campaigns": "Кампании",
++      "attendees": "Участники",
++      "history": "История"
+     },
+     "done": {
+       "publish": "Событие опубликовано.",
+@@ -223,7 +225,14 @@
+       "unpublish": "Не удалось снять с публикации: {{reason}}",
+       "cancel": "Не удалось отменить: {{reason}}"
+     },
+-    "noAccess": "Такого события нет, либо вы им не управляете."
++    "noAccess": "Такого события нет, либо вы им не управляете.",
++    "duplicate": "Дублировать",
++    "duplicateTitle": "Дублировать как новый черновик",
++    "duplicateHint": "Копируются только данные события и типы билетов. Участники, заказы, платежи, обращения и история не копируются; платные продажи неактивны.",
++    "duplicateStart": "Новое начало (необязательно)",
++    "duplicateConfirm": "Создать копию-черновик",
++    "duplicateFailed": "Не удалось дублировать событие: {{reason}}",
++    "copySuffix": "(копия)"
+   },
+   "ticketTypes": {
+     "empty": "Типов билетов пока нет. Добавьте бесплатный или платный.",
+@@ -715,5 +724,41 @@
+       "ends": "Укажите, когда кампания заканчивается.",
+       "window": "Окончание должно быть позже начала."
+     }
++  },
++  "history": {
++    "action": "Действие",
++    "loadFailed": "Не удалось загрузить историю.",
++    "empty": "Записей пока нет.",
++    "noMatch": "Нет записей по выбранным фильтрам.",
++    "system": "Система",
++    "showing": "Показано {{shown}} из {{total}}",
++    "more": "Показать ещё"
++  },
++  "roster": {
++    "unavailable": "Список участников и экспорт CSV требуют API списка участников на сервере, которого пока нет.",
++    "refundUnavailable": "Для возвратов нужен API возвратов на сервере, которого пока нет. Кнопки возврата скрыты.",
++    "name": "Имя",
++    "ticketType": "Тип билета",
++    "statusCol": "Статус",
++    "checkedIn": "Отмечен на входе",
++    "status": {
++      "valid": "Действителен",
++      "checked_in": "Отмечен на входе",
++      "refunded": "Возвращён",
++      "cancelled": "Отменён"
++    },
++    "export": "Экспорт CSV",
++    "exported": "Экспортировано участников: {{count}}.",
++    "exportFailed": "Не удалось экспортировать: {{reason}}",
++    "privacy": "В списке и CSV только имя, тип билета, статус и время отметки; контакты не экспортируются.",
++    "loadFailed": "Не удалось загрузить список.",
++    "empty": "Участников нет.",
++    "refund": "Вернуть заказ",
++    "confirmRefund": "Вернуть весь заказ, в который входит {{name}}? Все билеты заказа будут аннулированы. Это имитация возврата.",
++    "refunded": "Заказ возвращён.",
++    "refundFailed": "Не удалось выполнить возврат: {{reason}}",
++    "prev": "Назад",
++    "next": "Далее",
++    "range": "{{from}}–{{to}} из {{total}}"
+   }
+ }
+diff --git a/frontend/src/pages/EventManagePage.tsx b/frontend/src/pages/EventManagePage.tsx
+index 5a5d4c0..4f5ced1 100644
+--- a/frontend/src/pages/EventManagePage.tsx
++++ b/frontend/src/pages/EventManagePage.tsx
+@@ -7,12 +7,15 @@ import { EventEditor } from '../components/organizer/EventEditor';
+ import { TicketTypeManager } from '../components/organizer/TicketTypeManager';
+ import { PaidSalesActivation } from '../components/organizer/PaidSalesActivation';
+ import { CampaignManager } from '../components/organizer/CampaignManager';
++import { HistoryPanel } from '../components/organizer/HistoryPanel';
++import { AttendeesPanel } from '../components/organizer/AttendeesPanel';
++import { inputClass } from '../components/organizer/EventEditor';
+ import { formatEventDateTime } from '../services/tickets';
+ import { HttpError } from '../services/events';
+-import { organizerApi, type OrganizerEvent, type OrganizerTicketType } from '../services/organizer';
++import { fromLocalInput, organizerApi, type OrganizerEvent, type OrganizerTicketType } from '../services/organizer';
+ 
+-type Tab = 'details' | 'tickets' | 'paid' | 'campaigns';
+-const TABS: Tab[] = ['details', 'tickets', 'paid', 'campaigns'];
++type Tab = 'details' | 'tickets' | 'paid' | 'campaigns' | 'attendees' | 'history';
++const TABS: Tab[] = ['details', 'tickets', 'paid', 'campaigns', 'attendees', 'history'];
+ 
+ const statusBadge: Record<OrganizerEvent['status'], string> = {
+   draft: 'bg-gray-100 text-gray-700',
+@@ -44,6 +47,7 @@ function EventManagePage() {
+     (location.state as { created?: boolean } | null)?.created ? { kind: 'success', text: t('manage.createdNotice') } : null,
+   );
+   const [busy, setBusy] = useState(false);
++  const [dup, setDup] = useState<{ title: string; startsAt: string } | null>(null);
+ 
+   const load = useCallback(async () => {
+     if (!token || !id) return;
+@@ -131,6 +135,22 @@ function EventManagePage() {
+     }
+   }
+ 
++  async function duplicate() {
++    if (!dup) return;
++    setBusy(true);
++    setNotice(null);
++    try {
++      const res = await organizerApi.duplicate(token!, ev.id, {
++        title: dup.title.trim() || undefined,
++        starts_at: fromLocalInput(dup.startsAt),
++      });
++      navigate(`/organizer/events/${res.event_id}`, { state: { created: true } });
++    } catch (e) {
++      setNotice({ kind: 'error', text: t('manage.duplicateFailed', { reason: (e as Error).message }) });
++      setBusy(false);
++    }
++  }
++
+   const cancelled = ev.status === 'cancelled';
+   const paidActive = ev.paid_sales_status === 'ACTIVE';
+   const hasPaid = types.some((tt) => (tt.price ?? 0) > 0);
+@@ -166,6 +186,10 @@ function EventManagePage() {
+               {t('manage.unpublish')}
+             </button>
+           )}
++          <button onClick={() => setDup(dup ? null : { title: `${ev.title ?? ''} ${t('manage.copySuffix')}`.trim(), startsAt: '' })} disabled={busy}
++            className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-semibold hover:bg-gray-50 disabled:opacity-50">
++            {t('manage.duplicate')}
++          </button>
+           {!cancelled && (
+             <button onClick={() => run('cancel')} disabled={busy} className="rounded-lg border border-red-200 px-4 py-2 text-sm font-semibold text-red-600 hover:bg-red-50 disabled:opacity-50">
+               {t('manage.cancelEvent')}
+@@ -174,6 +198,25 @@ function EventManagePage() {
+         </div>
+       </header>
+ 
++      {dup && (
++        <section className="space-y-3 rounded-xl border border-blue-200 bg-blue-50/40 p-5 text-sm">
++          <h2 className="font-semibold">{t('manage.duplicateTitle')}</h2>
++          <p className="text-xs text-gray-600">{t('manage.duplicateHint')}</p>
++          <div className="grid gap-3 sm:grid-cols-2">
++            <label>{t('editor.title')}
++              <input value={dup.title} onChange={(e) => setDup({ ...dup, title: e.target.value })} className={inputClass} />
++            </label>
++            <label>{t('manage.duplicateStart')}
++              <input type="datetime-local" value={dup.startsAt} onChange={(e) => setDup({ ...dup, startsAt: e.target.value })} className={inputClass} />
++            </label>
++          </div>
++          <div className="flex gap-2">
++            <button onClick={duplicate} disabled={busy} className="rounded-lg bg-blue-600 px-4 py-2 font-semibold text-white disabled:opacity-50">{t('manage.duplicateConfirm')}</button>
++            <button onClick={() => setDup(null)} className="rounded-lg bg-gray-200 px-4 py-2 font-semibold">{t('common.cancel')}</button>
++          </div>
++        </section>
++      )}
++
+       {/* the "not ready" list goes away once the checklist is complete */}
+       <Notice notice={notice?.text === t('manage.cannotPublish') && missingForPublish.length === 0 ? null : notice} onClose={() => setNotice(null)} />
+ 
+@@ -210,6 +253,8 @@ function EventManagePage() {
+         {tab === 'tickets' && (
+           <TicketTypeManager token={token} eventId={ev.id} types={types} readOnly={cancelled} paidSalesActive={paidActive} onChange={setTypes} />
+         )}
++        {tab === 'attendees' && <AttendeesPanel token={token} eventId={ev.id} title={ev.title ?? ''} timezone={ev.timezone ?? 'Asia/Almaty'} />}
++        {tab === 'history' && <HistoryPanel token={token} eventId={ev.id} timezone={ev.timezone ?? 'Asia/Almaty'} />}
+         {tab === 'campaigns' && <CampaignManager token={token} event={ev} types={types} />}
+         {tab === 'paid' && (
+           <PaidSalesActivation token={token} event={ev} types={types}
+diff --git a/frontend/src/pages/OrganizerDashboard.tsx b/frontend/src/pages/OrganizerDashboard.tsx
+index 5795904..da4191f 100644
+--- a/frontend/src/pages/OrganizerDashboard.tsx
++++ b/frontend/src/pages/OrganizerDashboard.tsx
+@@ -243,23 +243,28 @@ function EventAnalyticsPanel({ token, summary, onClose }: { token: string; summa
+   const [dateFrom, setDateFrom] = useState('');
+   const [dateTo, setDateTo] = useState('');
+   const [typeId, setTypeId] = useState('');
+-  const [data, setData] = useState<EventAnalytics | null>(null);
+-  const [error, setError] = useState('');
++  const [result, setResult] = useState<{ key: string; data: EventAnalytics | null; error: string } | null>(null);
++  const key = `${summary.event.id}|${dateFrom}|${dateTo}|${typeId}`;
+ 
+   useEffect(() => {
++    let live = true;
+     organizerApi
+       .analytics(token, summary.event.id, { date_from: dateFrom, date_to: dateTo, ticket_type_id: typeId })
+-      .then((d) => { setData(d); setError(''); })
+-      .catch((e) => setError(e.message));
+-  }, [token, summary.event.id, dateFrom, dateTo, typeId]);
++      .then((d) => { if (live) setResult({ key, data: d, error: '' }); })
++      .catch((e) => { if (live) setResult({ key, data: null, error: e.message }); });
++    return () => { live = false; };
++  }, [token, summary.event.id, dateFrom, dateTo, typeId, key]);
+ 
+-  const a = data ?? summary;
++  const current = result?.key === key ? result : null;
++  const data = current?.data ?? null;
++  const error = current?.error ?? '';
+   const hasFilters = dateFrom || dateTo || typeId;
++  const a = data ?? (hasFilters || error ? null : summary);
+ 
+   return (
+     <section className="space-y-5">
+       <div className="flex justify-between">
+-        <h2 className="text-xl font-bold">{t('analytics.title', { title: a.event.title })}</h2>
++        <h2 className="text-xl font-bold">{t('analytics.title', { title: summary.event.title })}</h2>
+         <button onClick={onClose} className="text-sm text-gray-500">{t('analytics.hide')}</button>
+       </div>
+ 
+@@ -285,8 +290,9 @@ function EventAnalyticsPanel({ token, summary, onClose }: { token: string; summa
+         )}
+       </div>
+ 
+-      {error && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}
+-
++      {error && <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}
++      {!a && !error && <p role="status" className="py-8 text-center text-sm text-gray-500">{t('common.loading')}</p>}
++      {a && <>
+       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+         <StatCard
+           label={t('analytics.sold')}
+@@ -353,6 +359,7 @@ function EventAnalyticsPanel({ token, summary, onClose }: { token: string; summa
+           </p>
+         </div>
+       </div>
++      </>}
+     </section>
+   );
+ }
+diff --git a/frontend/src/services/__tests__/csv.test.ts b/frontend/src/services/__tests__/csv.test.ts
+new file mode 100644
+index 0000000..da4bcf8
+--- /dev/null
++++ b/frontend/src/services/__tests__/csv.test.ts
+@@ -0,0 +1,19 @@
++import { describe, expect, it } from 'vitest';
++import { csvCell, toCsv } from '../csv';
++
++describe('csv', () => {
++  it('quotes commas, quotes and newlines', () => {
++    expect(csvCell('a,b')).toBe('"a,b"');
++    expect(csvCell('say "hi"')).toBe('"say ""hi"""');
++    expect(csvCell('line1\nline2')).toBe('"line1\nline2"');
++  });
++
++  it('neutralises spreadsheet formulas', () => {
++    for (const v of ['=1+1', '+1', '-1', '@SUM(A1)', '\tcmd', '\rcmd']) expect(csvCell(v).startsWith("'") || csvCell(v).startsWith('"\'')).toBe(true);
++    expect(csvCell('=HYPERLINK("x")')).toBe('"\'=HYPERLINK(""x"")"');
++  });
++
++  it('renders null and numbers plainly and ends with CRLF', () => {
++    expect(toCsv(['a', 'b'], [[null, 3]])).toBe('a,b\r\n,3\r\n');
++  });
++});
+diff --git a/frontend/src/services/csv.ts b/frontend/src/services/csv.ts
+new file mode 100644
+index 0000000..225265c
+--- /dev/null
++++ b/frontend/src/services/csv.ts
+@@ -0,0 +1,23 @@
++const FORMULA_START = /^[=+\-@\t\r]/;
++
++export function csvCell(value: unknown): string {
++  let text = value === null || value === undefined ? '' : String(value);
++  if (FORMULA_START.test(text)) text = `'${text}`;
++  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
++}
++
++export function toCsv(header: string[], rows: unknown[][]): string {
++  return [header, ...rows].map((r) => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
++}
++
++export function downloadCsv(filename: string, csv: string) {
++  const blob = new Blob(['﻿', csv], { type: 'text/csv;charset=utf-8' });
++  const href = URL.createObjectURL(blob);
++  const a = document.createElement('a');
++  a.href = href;
++  a.download = filename;
++  document.body.appendChild(a);
++  a.click();
++  a.remove();
++  URL.revokeObjectURL(href);
++}
+diff --git a/frontend/src/services/organizer.ts b/frontend/src/services/organizer.ts
+index 3728dc3..ac7a068 100644
+--- a/frontend/src/services/organizer.ts
++++ b/frontend/src/services/organizer.ts
+@@ -149,6 +149,40 @@ export interface CampaignInput {
+   ticket_type_id?: string | null;
+ }
+ 
++export interface HistoryEntry {
++  id: string | number;
++  action: string;
++  created_at: string;
++  performed_by: string | null;
++  performed_by_name: string | null;
++  metadata: Record<string, unknown> | null;
++}
++
++export interface Attendee {
++  ticket_id: string;
++  attendee_name: string | null;
++  attendee_email: string | null;
++  ticket_type: string | null;
++  status: string;
++  order_id: string | null;
++  checked_in_at: string | null;
++  created_at: string | null;
++}
++
++export interface AttendeePage {
++  total: number;
++  limit: number;
++  offset: number;
++  items: Attendee[];
++}
++
++export interface DuplicateResult {
++  event_id: string;
++  source_event_id: string;
++  status: 'draft';
++  ticket_types_copied: number;
++}
++
+ export interface Profile {
+   id: string;
+   email: string;
+@@ -158,16 +192,18 @@ export interface Profile {
+ }
+ export type TicketTypeInput = Partial<Omit<OrganizerTicketType, 'id' | 'event_id' | 'sold' | 'available' | 'reserved' | 'refunded' | 'checked_in'>>;
+ 
+-let upgradeProbe: Promise<boolean> | null = null;
++let specProbe: Promise<Record<string, unknown>> | null = null;
+ 
+-export function campaignUpgradeAvailable(): Promise<boolean> {
+-  upgradeProbe ??= fetch(`${API_BASE_URL}/openapi.json`)
++export function apiSupports(path: string): Promise<boolean> {
++  specProbe ??= fetch(`${API_BASE_URL}/openapi.json`)
+     .then((r) => (r.ok ? r.json() : null))
+-    .then((spec) => Boolean(spec?.paths?.['/api/campaigns/{campaign_id}/disabled']))
+-    .catch(() => false);
+-  return upgradeProbe;
++    .then((spec) => (spec?.paths ?? {}) as Record<string, unknown>)
++    .catch(() => ({}));
++  return specProbe.then((paths) => path in paths);
+ }
+ 
++export const campaignUpgradeAvailable = () => apiSupports('/api/campaigns/{campaign_id}/disabled');
++
+ const json = (body: unknown) => ({ body: JSON.stringify(body) });
+ 
+ export const organizerApi = {
+@@ -211,6 +247,17 @@ export const organizerApi = {
+   setCampaignDisabled: (token: string, campaignId: string, disabled: boolean) =>
+     http<unknown>(`/api/campaigns/${campaignId}/disabled`, { method: 'PATCH', ...json({ disabled }) }, token),
+ 
++  history: (token: string, eventId: string) =>
++    http<HistoryEntry[]>(`/api/organizer/events/${eventId}/history`, {}, token),
++  duplicate: (token: string, eventId: string, body: { title?: string; starts_at?: string | null }) =>
++    http<DuplicateResult>(`/api/organizer/events/${eventId}/duplicate`, { method: 'POST', ...json(body) }, token),
++  attendees: (token: string, eventId: string, f: { status?: string; limit: number; offset: number }) => {
++    const q = new URLSearchParams({ limit: String(f.limit), offset: String(f.offset), ...(f.status ? { status: f.status } : {}) });
++    return http<AttendeePage>(`/api/organizer/events/${eventId}/attendees?${q}`, {}, token);
++  },
++  refundOrder: (token: string, orderId: string, reason?: string) =>
++    http<unknown>(`/api/organizer/orders/${orderId}/refund`, { method: 'POST', ...json(reason ? { reason } : {}) }, token),
++
+   profile: (token: string) => http<Profile>('/api/users/me', {}, token),
+   savePayout: (token: string, payoutInfo: string) =>
+     http<Profile>('/api/users/me', { method: 'PUT', ...json({ payout_info: payoutInfo }) }, token),
+-- 
+2.43.0
+

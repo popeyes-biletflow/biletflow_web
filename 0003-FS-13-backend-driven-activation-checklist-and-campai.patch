@@ -1,0 +1,1125 @@
+From ac66e862d9ddad85d4a6640e23fa47828f3660e0 Mon Sep 17 00:00:00 2001
+From: Alpamys Beissenbek <alpabisen@gmail.com>
+Date: Sun, 22 Nov 2026 17:23:11 +0000
+Subject: [PATCH 3/5] FS-13: backend-driven activation checklist and campaign
+ management tab
+
+---
+ backend/orders.py                             |  47 +++-
+ backend/routers/organizer.py                  |  37 +++
+ .../tests/test_fs13_activation_campaigns.py   |  90 +++++++
+ docs/evidence/FS-13/README.md                 |  41 +++
+ docs/evidence/FS-13/browser-check.js          |  54 ++++
+ .../components/organizer/CampaignManager.tsx  | 252 ++++++++++++++++++
+ .../organizer/PaidSalesActivation.tsx         |  49 +++-
+ frontend/src/i18n/locales/en.json             |  63 ++++-
+ frontend/src/i18n/locales/kk.json             |  63 ++++-
+ frontend/src/i18n/locales/ru.json             |  63 ++++-
+ frontend/src/pages/EventManagePage.tsx        |   6 +-
+ frontend/src/services/organizer.ts            |  70 +++++
+ 12 files changed, 813 insertions(+), 22 deletions(-)
+ create mode 100644 backend/tests/test_fs13_activation_campaigns.py
+ create mode 100644 docs/evidence/FS-13/README.md
+ create mode 100644 docs/evidence/FS-13/browser-check.js
+ create mode 100644 frontend/src/components/organizer/CampaignManager.tsx
+
+diff --git a/backend/orders.py b/backend/orders.py
+index 3f0c1d2..cd7267a 100644
+--- a/backend/orders.py
++++ b/backend/orders.py
+@@ -1,5 +1,6 @@
+ import secrets
+ import uuid
++from datetime import datetime, timezone
+ 
+ from decimal import Decimal, ROUND_HALF_UP
+ from typing import Literal
+@@ -14,7 +15,7 @@ from pydantic import BaseModel, Field
+ import notify
+ from crypto import ticket_qr_payload
+ from deps import db_for_user, get_current_user
+-from promo import call_rpc, require_organizer
++from promo import PUBLIC_API_URL, call_rpc, require_organizer
+ from schemas import CurrentUser
+ 
+ router = APIRouter()
+@@ -197,7 +198,49 @@ async def campaigns_stats(
+     db = db_for_user(user.access_token)
+     data = call_rpc(db, "campaign_stats", {"p_event_id": event_id}) or {}
+     campaigns = data.get("campaigns") or []
++    details = campaign_details(db, [c["campaign_id"] for c in campaigns if c.get("campaign_id")])
+     for c in campaigns:
+         scans = c.get("qr_scans") or 0
+         c["conversion_rate"] = round(c["orders"] / scans, 4) if scans else None
+-    return {"campaigns": campaigns, "totals": data.get("totals") or {}}
+\ No newline at end of file
++        c.update(details.get(str(c.get("campaign_id")), {}))
++    return {"campaigns": campaigns, "totals": data.get("totals") or {}}
++
++
++def campaign_state(row: dict, now: datetime) -> str:
++    if row.get("is_disabled"):
++        return "disabled"
++    starts, ends = row.get("starts_at"), row.get("ends_at")
++    if starts and parse_ts(starts) > now:
++        return "scheduled"
++    if ends and parse_ts(ends) <= now:
++        return "expired"
++    return "active"
++
++
++def parse_ts(raw) -> datetime:
++    value = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
++    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
++
++
++def campaign_details(db, ids: list) -> dict[str, dict]:
++    if not ids:
++        return {}
++    try:
++        rows = db.table("campaigns").select("*").in_("id", ids).execute().data or []
++    except Exception:
++        return {}
++    now = datetime.now(timezone.utc)
++    out = {}
++    for row in rows:
++        slug = row.get("qr_slug")
++        out[str(row["id"])] = {
++            "starts_at": row.get("starts_at"),
++            "ends_at": row.get("ends_at"),
++            "is_disabled": bool(row.get("is_disabled")),
++            "discount_type": row.get("discount_type") or "percent",
++            "discount_value": row.get("discount_value") if row.get("discount_value") is not None else row.get("discount_percent"),
++            "ticket_type_id": row.get("ticket_type_id"),
++            "qr_link": f"{PUBLIC_API_URL}/c/{slug}" if slug else None,
++            "state": campaign_state(row, now),
++        }
++    return out
+\ No newline at end of file
+diff --git a/backend/routers/organizer.py b/backend/routers/organizer.py
+index ed3a0fb..c14e726 100644
+--- a/backend/routers/organizer.py
++++ b/backend/routers/organizer.py
+@@ -2,6 +2,7 @@
+ 
+ Endpoints
+ ---------
++GET    /api/organizer/events/{event_id}/activation
+ POST   /api/organizer/events/{event_id}/activate-paid-sales
+ POST   /api/organizer/events/{event_id}/staff
+ GET    /api/organizer/events/{event_id}/staff
+@@ -67,6 +68,42 @@ def get_current_activation_fee() -> int:
+     return DEFAULT_ACTIVATION_FEE_KZT
+ 
+ 
++@router.get("/events/{event_id}/activation")
++async def activation_status(
++    event_id: str,
++    current_user: CurrentUser = Depends(get_current_user),
++) -> dict[str, Any]:
++    _assert_organizer_or_platform_admin(current_user)
++    db = db_for_user(current_user.access_token)
++    event_row = _assert_owns_event(db, event_id, current_user)
++
++    try:
++        tiers = db.table("ticket_types").select("id, price").eq("event_id", event_id).execute().data or []
++    except Exception as exc:
++        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=sanitize_error(exc))
++
++    paid_status = event_row.get("paid_sales_status") or "NONE"
++    active = paid_status == "ACTIVE" or bool(event_row.get("paid_sales_active"))
++    fee = get_current_activation_fee()
++    payout = current_user.payout_info
++    has_paid_tier = any((row.get("price") or 0) > 0 for row in tiers)
++    has_payout = bool(isinstance(payout, str) and payout.strip())
++
++    return {
++        "event_id": event_id,
++        "paid_sales_status": "SUSPENDED" if event_row.get("is_suspended") else paid_status,
++        "paid_sales_active": active,
++        "activation_fee_kzt": fee,
++        "simulated": True,
++        "checklist": {
++            "at_least_one_paid_ticket_type": {"passed": has_paid_tier},
++            "valid_payout_account": {"passed": has_payout},
++            "identity_verified": {"passed": True, "simulated": True},
++            "activation_fee_paid": {"passed": active, "simulated": True, "amount_kzt": fee},
++        },
++    }
++
++
+ @router.post("/events/{event_id}/activate-paid-sales")
+ async def activate_paid_sales(
+     event_id: str,
+diff --git a/backend/tests/test_fs13_activation_campaigns.py b/backend/tests/test_fs13_activation_campaigns.py
+new file mode 100644
+index 0000000..f94456c
+--- /dev/null
++++ b/backend/tests/test_fs13_activation_campaigns.py
+@@ -0,0 +1,90 @@
++from datetime import datetime, timedelta, timezone
++from unittest.mock import patch
++
++from fastapi.testclient import TestClient
++
++import deps
++import orders
++import routers.organizer as organizer_module
++from main import app
++from schemas import CurrentUser
++from tests.fakedb import FakeDB
++
++client = TestClient(app)
++
++
++def user(uid="org-1", role="organizer", payout=None):
++    return CurrentUser(id=uid, email="o@example.com", role=role, access_token="t", payout_info=payout)
++
++
++def iso(hours):
++    return (datetime.now(timezone.utc) + timedelta(hours=hours)).isoformat()
++
++
++def call(db, who, url, supabase=None):
++    app.dependency_overrides[deps.get_current_user] = lambda: who
++    try:
++        with patch.object(organizer_module, "db_for_user", lambda _t: db), \
++                patch.object(organizer_module, "supabase", supabase or db), \
++                patch.object(orders, "db_for_user", lambda _t: db):
++            return client.get(url, headers={"Authorization": "Bearer t"})
++    finally:
++        app.dependency_overrides.clear()
++
++
++def activation_db(**event):
++    ev = {"id": "ev-1", "organizer_id": "org-1", "paid_sales_status": "NONE", "paid_sales_active": False, **event}
++    return FakeDB(
++        events=[ev],
++        ticket_types=[{"id": "t1", "event_id": "ev-1", "price": 0}],
++        platform_settings=[{"key": "activation_fee_kzt", "value": 7500}],
++    )
++
++
++def test_activation_status_reports_real_fee_and_missing_items():
++    r = call(activation_db(), user(), "/api/organizer/events/ev-1/activation")
++    body = r.json()
++    assert r.status_code == 200
++    assert body["activation_fee_kzt"] == 7500
++    assert body["checklist"]["at_least_one_paid_ticket_type"]["passed"] is False
++    assert body["checklist"]["valid_payout_account"]["passed"] is False
++    assert body["checklist"]["identity_verified"]["simulated"] is True
++    assert body["checklist"]["activation_fee_paid"]["passed"] is False
++
++
++def test_activation_status_reflects_paid_tier_payout_and_active_state():
++    db = activation_db(paid_sales_status="ACTIVE", paid_sales_active=True)
++    db.tables["ticket_types"].append({"id": "t2", "event_id": "ev-1", "price": 5000})
++    body = call(db, user(payout="KZ123"), "/api/organizer/events/ev-1/activation").json()
++    assert body["paid_sales_active"] is True
++    assert all(body["checklist"][k]["passed"] for k in ("at_least_one_paid_ticket_type", "valid_payout_account", "activation_fee_paid"))
++
++
++def test_activation_status_denies_other_organizer_and_attendee():
++    assert call(activation_db(), user("org-2"), "/api/organizer/events/ev-1/activation").status_code == 403
++    assert call(activation_db(), user("a-1", role="attendee"), "/api/organizer/events/ev-1/activation").status_code == 403
++
++
++def campaign_db(**campaign):
++    row = {"id": "c1", "event_id": "ev-1", "name": "Spring", "discount_percent": 10, "qr_slug": "abc123",
++           "starts_at": iso(-5), "ends_at": iso(5), **campaign}
++    stat = {"campaign_id": "c1", "event_id": "ev-1", "name": "Spring", "code": "SPRING", "discount_percent": 10,
++            "max_uses": 5, "qr_scans": 4, "orders": 2, "tickets_sold": 3}
++    return FakeDB(campaigns=[row], rpcs={"campaign_stats": lambda _p: {"campaigns": [stat], "totals": {}}})
++
++
++def stats(db):
++    return call(db, user(), "/api/organizer/campaigns/stats?event_id=ev-1").json()["campaigns"][0]
++
++
++def test_campaign_stats_include_link_window_and_state():
++    c = stats(campaign_db())
++    assert c["qr_link"].endswith("/c/abc123")
++    assert c["state"] == "active" and c["discount_type"] == "percent" and c["discount_value"] == 10
++    assert c["conversion_rate"] == 0.5
++
++
++def test_campaign_state_disabled_expired_scheduled():
++    assert stats(campaign_db(is_disabled=True))["state"] == "disabled"
++    assert stats(campaign_db(starts_at=iso(-10), ends_at=iso(-1)))["state"] == "expired"
++    assert stats(campaign_db(starts_at=iso(2)))["state"] == "scheduled"
+diff --git a/docs/evidence/FS-13/README.md b/docs/evidence/FS-13/README.md
+new file mode 100644
+index 0000000..feae457
+--- /dev/null
++++ b/docs/evidence/FS-13/README.md
+@@ -0,0 +1,41 @@
++# FS-13 evidence: paid-sales activation and campaigns
++
++Base: `feature/FS-12-organizer-editor`. Depends on open PR #26 (campaign upgrade) for fixed-KZT, tier scope and disable; not merged and not assumed deployed.
++
++## Pre-existing (not new work)
++Activation request and checklist errors (`POST /api/organizer/events/{id}/activate-paid-sales`, PB-16), payout save, suspended/active presentation, admin fee setting, percent campaign creation, `/c/{slug}` redirect, `campaign_stats` RPC, hold-based server discount quote at checkout (FS-17).
++Fixed-KZT / tier-scoped / disable campaign logic belongs to #26 (ibragim-m) and is not reimplemented here.
++
++## Changes in this ticket
++| File | Change |
++|---|---|
++| `backend/routers/organizer.py` | `GET /api/organizer/events/{id}/activation`: owner-checked, returns the real activation fee, paid-tier and payout state, active state, and flags identity/fee as simulated. Organizers no longer need the admin fee endpoint. |
++| `backend/orders.py` | `campaigns/stats` rows now include tracking link, start/expiry, disabled flag, discount type/value, tier scope and a computed state (active / scheduled / expired / disabled). Works with the current schema; extra fields appear once #26's columns exist. |
++| `backend/tests/test_fs13_activation_campaigns.py` | 5 tests: fee and checklist, active state, denial (other organizer, attendee), campaign link/state. |
++| `PaidSalesActivation.tsx` | Fee from the backend (no 5000 constant); identity shown as a demo item from backend state, not a local pass; activate disabled until the fee is known; status error with retry. |
++| `CampaignManager.tsx` (new tab "Campaigns") | Create (percent works on `main`), list with state, redemptions vs limit, link visits, discount given, net revenue; copy link; downloadable QR PNG; destination text; validation that keeps inputs. Fixed-KZT, tier scope and enable/disable are enabled only when the backend's `/openapi.json` exposes `PATCH /api/campaigns/{id}/disabled`; otherwise a notice explains why. |
++| `services/organizer.ts`, locales | Client methods and types; strings in kk/ru/en. |
++
++## Commands run
++| Command | Result |
++|---|---|
++| `pytest -q` (backend) | 157 passed |
++| `npm run build` | exit 0 |
++| `npm run lint` | exit 0, no warnings in new/changed files |
++| `node docs/evidence/FS-13/browser-check.js` (Playwright, Vite dev, **stubbed API**) | 23/23 PASS in both backend modes (with and without upgrade); also covers FS-12 tier counts and cross-organizer URL |
++
++## Acceptance
++| Criterion | Status |
++|---|---|
++| Activation checklist reflects backend state; fee from backend | PASS (API tests; stubbed UI) |
++| Demo verification/fee labelled as simulated | PASS |
++| Terms acceptance persisted per event | NOT DONE: terms live in the activation request only; persisting needs a new column and migration (not applied) |
++| Campaign percent / fixed-KZT, scope, expiry | percent: PASS (stubbed); fixed/scope: BLOCKED on #26 |
++| Saved disabled / expired state | PASS in stats API tests; disable action BLOCKED on #26 |
++| Copy link, downloadable trackable QR | PASS (stubbed); real redirect and discount quote NOT RUN against a live server |
++| Server discount quote | existing checkout hold flow, not re-verified here |
++
++## Known gaps
++- Partial activation progress is not persisted server-side (see above).
++- Link visits and redemptions are shown as the backend reports them; #26 separates visits from redemptions more strictly.
++- The `/openapi.json` probe returns "unsupported" if the API hides its schema.
+diff --git a/docs/evidence/FS-13/browser-check.js b/docs/evidence/FS-13/browser-check.js
+new file mode 100644
+index 0000000..2e44324
+--- /dev/null
++++ b/docs/evidence/FS-13/browser-check.js
+@@ -0,0 +1,54 @@
++const { chromium } = require('playwright');
++const base = 'http://localhost:5199';
++const EV = { id: 'ev1', title: 'Jazz', status: 'published', visibility: 'public', starts_at: '2026-12-01T14:00:00+05:00', timezone: 'Asia/Almaty', venue_name: 'Hall', paid_sales_status: 'NONE' };
++const tiers = [{ id: 't1', event_id: 'ev1', name: 'GA', price: 0, quantity: 10, sold: 2, available: 8, reserved: 1, refunded: 1, checked_in: 1, is_hidden: false },
++  { id: 't2', event_id: 'ev1', name: 'VIP', price: 5000, quantity: 5, sold: 0, available: 5, reserved: 0, refunded: 0, checked_in: 0, is_hidden: false }];
++const camp = { campaign_id: 'c1', event_id: 'ev1', name: 'Spring', code: 'SPRING', discount_percent: 10, discount_type: 'percent', discount_value: 10, max_uses: 5, qr_scans: 4, orders: 2, tickets_sold: 3,
++  gross_sales_kzt: 15000, discount_total_kzt: 1500, net_revenue_kzt: 13500, state: 'active', qr_link: 'http://localhost:8000/c/abc123', starts_at: '2026-11-01T00:00:00+00:00', ends_at: '2026-12-31T00:00:00+00:00' };
++(async () => {
++  const b = await chromium.launch(); const res = []; const ok = (n, c) => res.push((c ? 'PASS ' : 'FAIL ') + n);
++  for (const upgrade of [false, true]) {
++    const ctx = await b.newContext({ viewport: { width: 1100, height: 900 }, acceptDownloads: true }); const p = await ctx.newPage();
++    await p.addInitScript(() => { localStorage.setItem('lang', 'en'); localStorage.setItem('auth_token', 'tok');
++      localStorage.setItem('auth_user', JSON.stringify({ id: 'org-1', email: 'o@example.com', name: 'o', role: 'organizer' })); });
++    let posted = null;
++    await p.route('**/openapi.json', r => r.fulfill({ json: { paths: upgrade ? { '/api/campaigns/{campaign_id}/disabled': {} } : {} } }));
++    await p.route('**/api/users/me', r => r.fulfill({ json: { id: 'org-1', email: 'o@example.com', full_name: 'O', role: 'organizer', payout_info: null } }));
++    await p.route('**/api/organizer/events', r => r.fulfill({ json: [EV] }));
++    await p.route('**/api/organizer/events/ev1/ticket-types', r => r.fulfill({ json: tiers }));
++    await p.route('**/api/organizer/events/zzz/ticket-types', r => r.fulfill({ status: 403, json: { detail: 'You do not manage this event.' } }));
++    await p.route('**/api/organizer/events/ev1/activation', r => r.fulfill({ json: { event_id: 'ev1', paid_sales_status: 'NONE', paid_sales_active: false, activation_fee_kzt: 7500, simulated: true,
++      checklist: { at_least_one_paid_ticket_type: { passed: true }, valid_payout_account: { passed: false }, identity_verified: { passed: true, simulated: true }, activation_fee_paid: { passed: false, simulated: true, amount_kzt: 7500 } } } }));
++    await p.route('**/api/organizer/campaigns/stats**', r => r.fulfill({ json: { campaigns: [camp], totals: {} } }));
++    await p.route('**/api/campaigns', async r => { posted = JSON.parse(r.request().postData()); await r.fulfill({ status: 201, json: { qr_link: 'x' } }); });
++    const t = `[upgrade=${upgrade}] `;
++    await p.goto(base + '/organizer/events/ev1?tab=tickets');
++    await p.getByText('Available 8 · Reserved 1 · Sold 2 · Refunded 1 · Checked in 1').waitFor();
++    ok(t + 'tier shows available/reserved/sold/refunded/checked-in', true);
++    if (!upgrade) {
++      await p.goto(base + '/organizer/events/zzz'); await p.getByText('does not exist or you do not manage it').waitFor(); ok(t + 'cross-organizer URL -> no access message', true);
++      await p.goto(base + '/organizer/events/ev1?tab=paid'); await p.getByText('Activate paid sales (7,500 ₸)').waitFor();
++      ok(t + 'activation uses backend fee (7,500), not hard-coded', !(await p.getByText('5,000').count()));
++      ok(t + 'identity item flagged demo', (await p.getByText('demo', { exact: true }).count()) >= 1);
++      ok(t + 'payout item missing from backend state', await p.getByText('Enter and save a payout account.').isVisible());
++    }
++    await p.goto(base + '/organizer/events/ev1?tab=campaigns'); await p.getByText('SPRING').first().waitFor();
++    ok(t + 'campaign state badge + stats', await p.getByText('Active', { exact: true }).isVisible() && await p.getByText('13,500 ₸').isVisible());
++    ok(t + 'upgrade notice ' + (upgrade ? 'hidden' : 'shown'), (await p.getByText(/campaign upgrade on the server/).count()) === (upgrade ? 0 : 1));
++    ok(t + 'fixed-amount radio ' + (upgrade ? 'enabled' : 'disabled'), (await p.getByRole('radio', { name: /Fixed amount/ }).isDisabled()) === !upgrade);
++    ok(t + 'destination shown', await p.getByText(/opens http:\/\/localhost:5199\/events\/ev1\?promo=SPRING/).isVisible());
++    await p.getByRole('button', { name: 'QR code' }).click();
++    const [dl] = await Promise.all([p.waitForEvent('download'), p.getByRole('button', { name: /Download QR/ }).click()]);
++    ok(t + 'QR PNG download', dl.suggestedFilename() === 'campaign-spring.png');
++    await p.getByLabel(/^Name/).fill('Autumn'); await p.getByLabel(/^Promo code/).fill('ab'); await p.getByRole('button', { name: 'Create campaign' }).click();
++    await p.getByText('Please fix the following:').waitFor();
++    ok(t + 'validation keeps inputs and lists errors', (await p.getByLabel(/^Name/).inputValue()) === 'Autumn' && await p.getByText(/Code: 3/).isVisible() && posted === null);
++    await p.getByLabel(/^Promo code/).fill('autumn'); await p.getByLabel(/^Discount, %/).fill('15'); await p.getByLabel(/^Maximum/).fill('20'); await p.getByLabel(/^Expires/).fill('2026-12-30T12:00');
++    await p.getByRole('button', { name: 'Create campaign' }).click(); await p.getByText('Campaign AUTUMN created.').waitFor();
++    ok(t + 'create sends percent payload' + (upgrade ? ' + upgrade fields' : ' only'), posted.discount_percent === 15 && posted.code === 'AUTUMN' && (('discount_type' in posted) === upgrade));
++    if (upgrade) ok(t + 'disable action offered', await p.getByRole('button', { name: 'Disable' }).isVisible());
++    ok(t + 'no horizontal scroll', await p.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
++    await ctx.close();
++  }
++  console.log(res.join('\n')); await b.close();
++})().catch(e => { console.error(e); process.exit(1); });
+diff --git a/frontend/src/components/organizer/CampaignManager.tsx b/frontend/src/components/organizer/CampaignManager.tsx
+new file mode 100644
+index 0000000..8e50b72
+--- /dev/null
++++ b/frontend/src/components/organizer/CampaignManager.tsx
+@@ -0,0 +1,252 @@
++import { useCallback, useEffect, useState } from 'react';
++import { useTranslation } from 'react-i18next';
++import { QRCodeCanvas } from 'qrcode.react';
++import { formatKZT } from '../../services/events';
++import { formatEventDateTime } from '../../services/tickets';
++import {
++  campaignUpgradeAvailable, fromLocalInput, organizerApi,
++  type Campaign, type CampaignInput, type DiscountType, type OrganizerEvent, type OrganizerTicketType,
++} from '../../services/organizer';
++import { Notice, type NoticeState } from '../Notice';
++import { inputClass } from './EventEditor';
++
++interface Props {
++  token: string;
++  event: OrganizerEvent;
++  types: OrganizerTicketType[];
++}
++
++const CODE_PATTERN = /^[A-Za-z0-9_-]{3,32}$/;
++
++const badge: Record<NonNullable<Campaign['state']>, string> = {
++  active: 'bg-emerald-100 text-emerald-800',
++  scheduled: 'bg-blue-100 text-blue-800',
++  expired: 'bg-gray-200 text-gray-700',
++  disabled: 'bg-red-100 text-red-700',
++};
++
++const emptyForm = { name: '', code: '', type: 'percent' as DiscountType, value: '', tier: '', maxUses: '', starts: '', ends: '' };
++
++export function CampaignManager({ token, event, types }: Props) {
++  const { t } = useTranslation();
++  const [campaigns, setCampaigns] = useState<Campaign[] | null>(null);
++  const [loadFailed, setLoadFailed] = useState(false);
++  const [upgrade, setUpgrade] = useState(false);
++  const [form, setForm] = useState(emptyForm);
++  const [busy, setBusy] = useState(false);
++  const [notice, setNotice] = useState<NoticeState>(null);
++  const [qrFor, setQrFor] = useState<string | null>(null);
++
++  const [reloadKey, setReloadKey] = useState(0);
++  const load = useCallback(() => setReloadKey((k) => k + 1), []);
++
++  useEffect(() => {
++    let live = true;
++    organizerApi.campaigns(token, event.id)
++      .then((res) => { if (live) { setCampaigns(res.campaigns); setLoadFailed(false); } })
++      .catch(() => { if (live) setLoadFailed(true); });
++    return () => { live = false; };
++  }, [token, event.id, reloadKey]);
++
++  useEffect(() => { campaignUpgradeAvailable().then(setUpgrade); }, []);
++
++  const set = (k: keyof typeof emptyForm, v: string) => setForm((f) => ({ ...f, [k]: v }));
++  const visibleTypes = types.filter((x) => !x.is_hidden);
++  const tierName = (id?: string | null) => types.find((x) => x.id === id)?.name ?? t('campaigns.allTiers');
++
++  function validate(): string[] {
++    const errors: string[] = [];
++    const value = Number(form.value);
++    if (!form.name.trim()) errors.push(t('campaigns.errors.name'));
++    if (!CODE_PATTERN.test(form.code)) errors.push(t('campaigns.errors.code'));
++    if (!Number.isInteger(value) || value < 1 || (form.type === 'percent' && value > 100)) {
++      errors.push(form.type === 'percent' ? t('campaigns.errors.percent') : t('campaigns.errors.fixed'));
++    }
++    if (!Number.isInteger(Number(form.maxUses)) || Number(form.maxUses) < 1) errors.push(t('campaigns.errors.maxUses'));
++    if (!form.ends) errors.push(t('campaigns.errors.ends'));
++    else if (form.starts && form.ends <= form.starts) errors.push(t('campaigns.errors.window'));
++    return errors;
++  }
++
++  async function create(e: React.FormEvent) {
++    e.preventDefault();
++    const errors = validate();
++    if (errors.length) {
++      setNotice({ kind: 'error', text: t('campaigns.fixErrors'), items: errors });
++      return;
++    }
++    const value = Number(form.value);
++    const body: CampaignInput = {
++      event_id: event.id,
++      name: form.name.trim(),
++      code: form.code.trim(),
++      max_uses: Number(form.maxUses),
++      ends_at: fromLocalInput(form.ends)!,
++      starts_at: fromLocalInput(form.starts),
++      ...(form.type === 'percent' ? { discount_percent: value } : {}),
++      ...(upgrade ? { discount_type: form.type, discount_value: value, ticket_type_id: form.tier || null } : {}),
++    };
++    setBusy(true);
++    setNotice(null);
++    try {
++      await organizerApi.createCampaign(token, body);
++      setForm(emptyForm);
++      setNotice({ kind: 'success', text: t('campaigns.created', { code: body.code.toUpperCase() }) });
++      load();
++    } catch (err) {
++      setNotice({ kind: 'error', text: t('campaigns.createFailed', { reason: (err as Error).message }) });
++    } finally {
++      setBusy(false);
++    }
++  }
++
++  async function toggle(c: Campaign) {
++    setBusy(true);
++    setNotice(null);
++    try {
++      await organizerApi.setCampaignDisabled(token, c.campaign_id, !c.is_disabled);
++      load();
++    } catch (err) {
++      setNotice({ kind: 'error', text: t('campaigns.toggleFailed', { reason: (err as Error).message }) });
++    } finally {
++      setBusy(false);
++    }
++  }
++
++  async function copy(link: string) {
++    try {
++      await navigator.clipboard.writeText(link);
++      setNotice({ kind: 'success', text: t('campaigns.copied') });
++    } catch {
++      setNotice({ kind: 'error', text: t('campaigns.copyFailed', { link }) });
++    }
++  }
++
++  function downloadQr(c: Campaign) {
++    const canvas = document.getElementById(`qr-${c.campaign_id}`) as HTMLCanvasElement | null;
++    if (!canvas) return;
++    const a = document.createElement('a');
++    a.href = canvas.toDataURL('image/png');
++    a.download = `campaign-${c.code.toLowerCase()}.png`;
++    a.click();
++  }
++
++  const discountText = (c: Campaign) => {
++    const kind = c.discount_type ?? 'percent';
++    const value = c.discount_value ?? c.discount_percent ?? 0;
++    return kind === 'fixed_kzt' ? formatKZT(value) : `${value}%`;
++  };
++
++  return (
++    <div className="space-y-6">
++      <Notice notice={notice} onClose={() => setNotice(null)} />
++      {!upgrade && <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-900">{t('campaigns.upgradePending')}</p>}
++
++      <section>
++        <h3 className="mb-3 font-semibold">{t('campaigns.listTitle')}</h3>
++        {loadFailed && (
++          <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-700">
++            {t('campaigns.loadFailed')} <button onClick={load} className="font-semibold underline">{t('common.retry')}</button>
++          </p>
++        )}
++        {!loadFailed && campaigns === null && <p className="text-sm text-gray-500" role="status">{t('common.loading')}</p>}
++        {campaigns?.length === 0 && <p className="text-sm text-gray-500">{t('campaigns.empty')}</p>}
++        <ul className="space-y-3">
++          {campaigns?.map((c) => (
++            <li key={c.campaign_id} className="rounded-lg border border-gray-200 p-4">
++              <div className="flex flex-wrap items-center gap-2">
++                <span className="font-semibold">{c.name}</span>
++                <span className="rounded bg-gray-100 px-2 py-0.5 font-mono text-xs">{c.code}</span>
++                {c.state && <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${badge[c.state]}`}>{t(`campaigns.state.${c.state}`)}</span>}
++                <span className="ml-auto font-semibold">−{discountText(c)}</span>
++              </div>
++              <p className="mt-1 text-xs text-gray-500">
++                {tierName(c.ticket_type_id)}
++                {c.starts_at && ` · ${formatEventDateTime(c.starts_at, event.timezone ?? 'Asia/Almaty')}`}
++                {c.ends_at && ` → ${formatEventDateTime(c.ends_at, event.timezone ?? 'Asia/Almaty')}`}
++              </p>
++              <dl className="mt-2 grid grid-cols-2 gap-2 text-sm sm:grid-cols-5">
++                <div><dt className="text-xs text-gray-500">{t('campaigns.stats.scans')}</dt><dd>{c.qr_scans}</dd></div>
++                <div><dt className="text-xs text-gray-500">{t('campaigns.stats.redemptions')}</dt><dd>{c.orders} / {c.max_uses}</dd></div>
++                <div><dt className="text-xs text-gray-500">{t('campaigns.stats.tickets')}</dt><dd>{c.tickets_sold}</dd></div>
++                <div><dt className="text-xs text-gray-500">{t('campaigns.stats.discount')}</dt><dd>{formatKZT(c.discount_total_kzt)}</dd></div>
++                <div><dt className="text-xs text-gray-500">{t('campaigns.stats.net')}</dt><dd>{formatKZT(c.net_revenue_kzt)}</dd></div>
++              </dl>
++              {c.qr_link && (
++                <div className="mt-3 space-y-2">
++                  <p className="break-all text-xs text-gray-600">
++                    {t('campaigns.destination', { link: c.qr_link, target: `${window.location.origin}/events/${c.event_id}?promo=${c.code}` })}
++                  </p>
++                  <div className="flex flex-wrap gap-3 text-xs font-semibold">
++                    <button onClick={() => copy(c.qr_link!)} className="text-blue-600">{t('campaigns.copyLink')}</button>
++                    <button onClick={() => setQrFor(qrFor === c.campaign_id ? null : c.campaign_id)} className="text-blue-600" aria-expanded={qrFor === c.campaign_id}>
++                      {t('campaigns.showQr')}
++                    </button>
++                    {upgrade && (
++                      <button onClick={() => toggle(c)} disabled={busy} className={c.is_disabled ? 'text-emerald-700' : 'text-red-600'}>
++                        {c.is_disabled ? t('campaigns.enable') : t('campaigns.disable')}
++                      </button>
++                    )}
++                  </div>
++                  {qrFor === c.campaign_id && (
++                    <div className="flex items-end gap-3">
++                      <QRCodeCanvas id={`qr-${c.campaign_id}`} value={c.qr_link} size={192} marginSize={2} />
++                      <button onClick={() => downloadQr(c)} className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-semibold hover:bg-gray-50">
++                        {t('campaigns.downloadQr')}
++                      </button>
++                    </div>
++                  )}
++                </div>
++              )}
++            </li>
++          ))}
++        </ul>
++      </section>
++
++      <form onSubmit={create} noValidate className="space-y-4 rounded-lg border border-blue-200 bg-blue-50/40 p-4">
++        <h3 className="font-semibold">{t('campaigns.newTitle')}</h3>
++        <fieldset disabled={busy} className="grid gap-4 sm:grid-cols-2">
++          <label className="text-sm">{t('campaigns.name')} *
++            <input value={form.name} onChange={(e) => set('name', e.target.value)} maxLength={100} className={inputClass} />
++          </label>
++          <label className="text-sm">{t('campaigns.code')} *
++            <input value={form.code} onChange={(e) => set('code', e.target.value.toUpperCase())} maxLength={32} className={`${inputClass} font-mono`} />
++          </label>
++          <div className="text-sm">
++            {t('campaigns.discountType')}
++            <div className="mt-1 flex gap-2">
++              {(['percent', 'fixed_kzt'] as DiscountType[]).map((k) => (
++                <label key={k} className={`flex-1 rounded-md border px-3 py-2 ${form.type === k ? 'border-blue-500 bg-blue-50' : 'border-gray-300 bg-white'} ${k === 'fixed_kzt' && !upgrade ? 'opacity-50' : 'cursor-pointer'}`}>
++                  <input type="radio" name="discount-type" className="mr-2" checked={form.type === k}
++                    disabled={k === 'fixed_kzt' && !upgrade} onChange={() => set('type', k)} />
++                  {t(`campaigns.type.${k}`)}
++                </label>
++              ))}
++            </div>
++          </div>
++          <label className="text-sm">{form.type === 'percent' ? t('campaigns.percent') : t('campaigns.fixed')} *
++            <input type="number" min={1} max={form.type === 'percent' ? 100 : undefined} value={form.value} onChange={(e) => set('value', e.target.value)} className={inputClass} />
++          </label>
++          <label className="text-sm">{t('campaigns.scope')}
++            <select value={form.tier} onChange={(e) => set('tier', e.target.value)} disabled={!upgrade} className={inputClass}>
++              <option value="">{t('campaigns.allTiers')}</option>
++              {visibleTypes.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
++            </select>
++          </label>
++          <label className="text-sm">{t('campaigns.maxUses')} *
++            <input type="number" min={1} value={form.maxUses} onChange={(e) => set('maxUses', e.target.value)} className={inputClass} />
++          </label>
++          <label className="text-sm">{t('campaigns.starts')}
++            <input type="datetime-local" value={form.starts} onChange={(e) => set('starts', e.target.value)} className={inputClass} />
++          </label>
++          <label className="text-sm">{t('campaigns.ends')} *
++            <input type="datetime-local" value={form.ends} onChange={(e) => set('ends', e.target.value)} className={inputClass} />
++          </label>
++        </fieldset>
++        <button disabled={busy} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">
++          {busy ? t('common.saving') : t('campaigns.create')}
++        </button>
++      </form>
++    </div>
++  );
++}
+diff --git a/frontend/src/components/organizer/PaidSalesActivation.tsx b/frontend/src/components/organizer/PaidSalesActivation.tsx
+index f25b438..4117435 100644
+--- a/frontend/src/components/organizer/PaidSalesActivation.tsx
++++ b/frontend/src/components/organizer/PaidSalesActivation.tsx
+@@ -3,13 +3,11 @@ import { useTranslation } from 'react-i18next';
+ import { formatKZT, HttpError } from '../../services/events';
+ import {
+   CHECKLIST_KEYS, organizerApi,
+-  type Checklist, type ChecklistKey, type OrganizerEvent, type OrganizerTicketType, type Profile,
++  type ActivationStatus, type Checklist, type ChecklistKey, type OrganizerEvent, type OrganizerTicketType, type Profile,
+ } from '../../services/organizer';
+ import { Notice, type NoticeState } from '../Notice';
+ import { inputClass } from './EventEditor';
+ 
+-const ACTIVATION_FEE_KZT = 5000;
+-
+ interface Props {
+   token: string;
+   event: OrganizerEvent;
+@@ -27,6 +25,20 @@ export function PaidSalesActivation({ token, event, types, onActivated, onGoToTi
+   const [terms, setTerms] = useState(false);
+   const [busy, setBusy] = useState(false);
+   const [notice, setNotice] = useState<NoticeState>(null);
++  const [status, setStatus] = useState<ActivationStatus | null>(null);
++  const [statusFailed, setStatusFailed] = useState(false);
++  const [reloadKey, setReloadKey] = useState(0);
++
++  useEffect(() => {
++    let live = true;
++    organizerApi.activation(token, event.id)
++      .then((st) => { if (live) { setStatus(st); setStatusFailed(false); } })
++      .catch(() => { if (live) setStatusFailed(true); });
++    return () => { live = false; };
++  }, [token, event.id, event.paid_sales_status, types, reloadKey]);
++
++  const fee = status?.activation_fee_kzt ?? null;
++  const feeText = fee === null ? '…' : formatKZT(fee);
+ 
+   useEffect(() => {
+     organizerApi.profile(token)
+@@ -36,13 +48,14 @@ export function PaidSalesActivation({ token, event, types, onActivated, onGoToTi
+ 
+   const active = event.paid_sales_status === 'ACTIVE';
+   const suspended = event.paid_sales_status === 'SUSPENDED';
+-  const hasPaidType = types.some((tt) => (tt.price ?? 0) > 0);
+-  const hasPayout = Boolean(profile?.payout_info?.trim());
++  const hasPaidType = status?.checklist.at_least_one_paid_ticket_type?.passed ?? types.some((tt) => (tt.price ?? 0) > 0);
++  const hasPayout = status?.checklist.valid_payout_account?.passed ?? Boolean(profile?.payout_info?.trim());
++  const identityKnown = status?.checklist.identity_verified;
+ 
+   const local: Record<ChecklistKey, ItemState> = {
+     at_least_one_paid_ticket_type: hasPaidType ? 'passed' : 'missing',
+     valid_payout_account: hasPayout ? 'passed' : 'missing',
+-    identity_verified: 'passed',
++    identity_verified: identityKnown ? (identityKnown.passed ? 'passed' : 'missing') : 'pending',
+     activation_fee_paid: active ? 'passed' : 'pending',
+     paid_event_terms_accepted: active || terms ? 'passed' : 'missing',
+   };
+@@ -59,6 +72,7 @@ export function PaidSalesActivation({ token, event, types, onActivated, onGoToTi
+     setBusy(true);
+     try {
+       setProfile(await organizerApi.savePayout(token, payout.trim()));
++      setReloadKey((k) => k + 1);
+       setNotice({ kind: 'success', text: t('activation.payoutSaved') });
+     } catch (e) {
+       setNotice({ kind: 'error', text: t('activation.payoutFailed', { reason: (e as Error).message }) });
+@@ -74,7 +88,7 @@ export function PaidSalesActivation({ token, event, types, onActivated, onGoToTi
+       const res = await organizerApi.activatePaidSales(token, event.id, terms);
+       setNotice({
+         kind: 'success',
+-        text: res.status === 'already_active' ? t('activation.alreadyActive') : t('activation.success', { fee: formatKZT(res.activation_fee_kzt ?? ACTIVATION_FEE_KZT) }),
++        text: res.status === 'already_active' ? t('activation.alreadyActive') : t('activation.success', { fee: formatKZT(res.activation_fee_kzt ?? fee ?? 0) }),
+       });
+       onActivated();
+     } catch (e) {
+@@ -117,9 +131,14 @@ export function PaidSalesActivation({ token, event, types, onActivated, onGoToTi
+             <li key={key} className="flex gap-3 p-4">
+               <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-sm font-bold ${color[s]}`} aria-hidden>{icon[s]}</span>
+               <div className="min-w-0 flex-1">
+-                <p className="font-medium">{t(`activation.items.${key}`)}</p>
++                <p className="font-medium">
++                  {t(`activation.items.${key}`)}
++                  {(key === 'identity_verified' || key === 'activation_fee_paid') && status?.simulated && (
++                    <span className="ml-2 rounded-full bg-gray-100 px-2 py-0.5 text-xs font-semibold text-gray-600">{t('activation.demoBadge')}</span>
++                  )}
++                </p>
+                 <p className={`text-sm ${s === 'missing' ? 'text-red-700' : 'text-gray-500'}`}>
+-                  {s === 'missing' ? t(`activation.missing.${key}`) : t(`activation.ok.${key}`, { fee: formatKZT(ACTIVATION_FEE_KZT) })}
++                  {s === 'missing' ? t(`activation.missing.${key}`) : t(`activation.ok.${key}`, { fee: feeText })}
+                 </p>
+ 
+                 {key === 'at_least_one_paid_ticket_type' && s === 'missing' && (
+@@ -145,7 +164,7 @@ export function PaidSalesActivation({ token, event, types, onActivated, onGoToTi
+                 {key === 'paid_event_terms_accepted' && !active && (
+                   <label className="mt-2 flex items-start gap-2 text-sm">
+                     <input type="checkbox" checked={terms} onChange={(e) => setTerms(e.target.checked)} className="mt-1" />
+-                    <span>{t('activation.termsText', { fee: formatKZT(ACTIVATION_FEE_KZT) })}</span>
++                    <span>{t('activation.termsText', { fee: feeText })}</span>
+                   </label>
+                 )}
+               </div>
+@@ -159,9 +178,15 @@ export function PaidSalesActivation({ token, event, types, onActivated, onGoToTi
+           {missing.length > 0 && (
+             <p className="text-sm text-red-700">{t('activation.stillMissing', { count: missing.length })}</p>
+           )}
+-          <button onClick={activate} disabled={busy}
++          {statusFailed && (
++            <p role="alert" className="text-sm text-red-700">
++              {t('activation.statusFailed')}{' '}
++              <button onClick={() => setReloadKey((k) => k + 1)} className="font-semibold underline">{t('common.retry')}</button>
++            </p>
++          )}
++          <button onClick={activate} disabled={busy || fee === null}
+             className="rounded-lg bg-amber-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-amber-700 disabled:opacity-50">
+-            {busy ? t('activation.activating') : t('activation.activate', { fee: formatKZT(ACTIVATION_FEE_KZT) })}
++            {busy ? t('activation.activating') : t('activation.activate', { fee: feeText })}
+           </button>
+           <p className="text-xs text-gray-500">{t('activation.simulatedNote')}</p>
+         </div>
+diff --git a/frontend/src/i18n/locales/en.json b/frontend/src/i18n/locales/en.json
+index 637b92a..6f6fc08 100644
+--- a/frontend/src/i18n/locales/en.json
++++ b/frontend/src/i18n/locales/en.json
+@@ -208,7 +208,8 @@
+     "tabs": {
+       "details": "Details",
+       "tickets": "Ticket types",
+-      "paid": "Paid sales"
++      "paid": "Paid sales",
++      "campaigns": "Campaigns"
+     },
+     "done": {
+       "publish": "Event published.",
+@@ -309,7 +310,9 @@
+     "success": "Paid sales activated. Activation fee {{fee}} recorded (simulated).",
+     "alreadyActive": "Paid sales are already active for this event.",
+     "failed": "Activation failed. Missing requirements:",
+-    "requestFailed": "Activation request failed: {{reason}}"
++    "requestFailed": "Activation request failed: {{reason}}",
++    "demoBadge": "demo",
++    "statusFailed": "Could not load the activation status."
+   },
+   "organizer": {
+     "title": "Organizer dashboard",
+@@ -656,5 +659,61 @@
+       "account": "Account",
+       "technical": "Technical problem"
+     }
++  },
++  "campaigns": {
++    "upgradePending": "Fixed-amount discounts, per-tier scope and disabling a campaign need the campaign upgrade on the server, which is not available yet. Percent campaigns work now.",
++    "listTitle": "Campaigns",
++    "loadFailed": "Could not load campaigns.",
++    "empty": "No campaigns for this event yet.",
++    "state": {
++      "active": "Active",
++      "scheduled": "Scheduled",
++      "expired": "Expired",
++      "disabled": "Disabled"
++    },
++    "allTiers": "All ticket types",
++    "stats": {
++      "scans": "Link visits",
++      "redemptions": "Redemptions",
++      "tickets": "Tickets",
++      "discount": "Discount given",
++      "net": "Net revenue"
++    },
++    "destination": "Tracking link {{link}} opens {{target}} with the code applied; the discount is confirmed by the server at checkout.",
++    "copyLink": "Copy link",
++    "copied": "Link copied.",
++    "copyFailed": "Could not copy automatically. Link: {{link}}",
++    "showQr": "QR code",
++    "downloadQr": "Download QR (PNG)",
++    "enable": "Enable",
++    "disable": "Disable",
++    "toggleFailed": "Could not change the campaign: {{reason}}",
++    "newTitle": "New campaign",
++    "name": "Name",
++    "code": "Promo code",
++    "discountType": "Discount type",
++    "type": {
++      "percent": "Percent",
++      "fixed_kzt": "Fixed amount (₸)"
++    },
++    "percent": "Discount, %",
++    "fixed": "Discount, ₸",
++    "scope": "Applies to",
++    "maxUses": "Maximum redemptions",
++    "starts": "Starts (optional)",
++    "ends": "Expires",
++    "create": "Create campaign",
++    "fixErrors": "Please fix the following:",
++    "created": "Campaign {{code}} created.",
++    "createFailed": "Could not create the campaign: {{reason}}",
++    "errors": {
++      "name": "Enter a campaign name.",
++      "code": "Code: 3–32 letters, digits, - or _.",
++      "percent": "Percent must be a whole number from 1 to 100.",
++      "fixed": "Fixed discount must be a whole number of tenge, at least 1.",
++      "maxUses": "Maximum redemptions must be at least 1.",
++      "ends": "Choose when the campaign expires.",
++      "window": "The expiry must be after the start."
++    }
+   }
+ }
+diff --git a/frontend/src/i18n/locales/kk.json b/frontend/src/i18n/locales/kk.json
+index 07c7619..144b10d 100644
+--- a/frontend/src/i18n/locales/kk.json
++++ b/frontend/src/i18n/locales/kk.json
+@@ -208,7 +208,8 @@
+     "tabs": {
+       "details": "Мәліметтер",
+       "tickets": "Билет түрлері",
+-      "paid": "Ақылы сату"
++      "paid": "Ақылы сату",
++      "campaigns": "Науқандар"
+     },
+     "done": {
+       "publish": "Іс-шара жарияланды.",
+@@ -307,7 +308,9 @@
+     "success": "Ақылы сату белсендірілді. {{fee}} төлемі тіркелді (симуляция).",
+     "alreadyActive": "Ақылы сату бұрыннан белсенді.",
+     "failed": "Белсендіру сәтсіз. Орындалмаған:",
+-    "requestFailed": "Белсендіру сұрауы сәтсіз: {{reason}}"
++    "requestFailed": "Белсендіру сұрауы сәтсіз: {{reason}}",
++    "demoBadge": "демо",
++    "statusFailed": "Белсендіру күйін жүктеу мүмкін болмады."
+   },
+   "organizer": {
+     "title": "Ұйымдастырушы кабинеті",
+@@ -649,5 +652,61 @@
+       "account": "Аккаунт",
+       "technical": "Техникалық мәселе"
+     }
++  },
++  "campaigns": {
++    "upgradePending": "Тіркелген сомадағы жеңілдіктер, билет түріне байлау және науқанды өшіру серверде науқан жаңартуын талап етеді, ол әзірге қолжетімді емес. Пайыздық науқандар жұмыс істейді.",
++    "listTitle": "Науқандар",
++    "loadFailed": "Науқандарды жүктеу мүмкін болмады.",
++    "empty": "Бұл іс-шара үшін науқан әлі жоқ.",
++    "state": {
++      "active": "Белсенді",
++      "scheduled": "Жоспарланған",
++      "expired": "Мерзімі өтті",
++      "disabled": "Өшірілген"
++    },
++    "allTiers": "Барлық билет түрлері",
++    "stats": {
++      "scans": "Сілтемеге өту",
++      "redemptions": "Қолданылды",
++      "tickets": "Билеттер",
++      "discount": "Берілген жеңілдік",
++      "net": "Таза түсім"
++    },
++    "destination": "{{link}} сілтемесі {{target}} бетін код қолданылған күйде ашады; жеңілдікті рәсімдеу кезінде сервер растайды.",
++    "copyLink": "Сілтемені көшіру",
++    "copied": "Сілтеме көшірілді.",
++    "copyFailed": "Автоматты түрде көшіру мүмкін болмады. Сілтеме: {{link}}",
++    "showQr": "QR-код",
++    "downloadQr": "QR жүктеу (PNG)",
++    "enable": "Қосу",
++    "disable": "Өшіру",
++    "toggleFailed": "Науқанды өзгерту мүмкін болмады: {{reason}}",
++    "newTitle": "Жаңа науқан",
++    "name": "Атауы",
++    "code": "Промокод",
++    "discountType": "Жеңілдік түрі",
++    "type": {
++      "percent": "Пайыз",
++      "fixed_kzt": "Тіркелген сома (₸)"
++    },
++    "percent": "Жеңілдік, %",
++    "fixed": "Жеңілдік, ₸",
++    "scope": "Қолданылады",
++    "maxUses": "Ең көп қолданыс",
++    "starts": "Басталуы (міндетті емес)",
++    "ends": "Аяқталуы",
++    "create": "Науқан құру",
++    "fixErrors": "Мыналарды түзетіңіз:",
++    "created": "{{code}} науқаны құрылды.",
++    "createFailed": "Науқанды құру мүмкін болмады: {{reason}}",
++    "errors": {
++      "name": "Науқан атауын енгізіңіз.",
++      "code": "Код: 3–32 таңба — әріптер, сандар, - немесе _.",
++      "percent": "Пайыз — 1-ден 100-ге дейінгі бүтін сан.",
++      "fixed": "Тіркелген жеңілдік — кемінде 1 теңге, бүтін сан.",
++      "maxUses": "Ең көп қолданыс кемінде 1 болуы керек.",
++      "ends": "Науқан қашан аяқталатынын таңдаңыз.",
++      "window": "Аяқталуы басталуынан кейін болуы керек."
++    }
+   }
+ }
+diff --git a/frontend/src/i18n/locales/ru.json b/frontend/src/i18n/locales/ru.json
+index d0a5c59..738b0ce 100644
+--- a/frontend/src/i18n/locales/ru.json
++++ b/frontend/src/i18n/locales/ru.json
+@@ -210,7 +210,8 @@
+     "tabs": {
+       "details": "Детали",
+       "tickets": "Типы билетов",
+-      "paid": "Платные продажи"
++      "paid": "Платные продажи",
++      "campaigns": "Кампании"
+     },
+     "done": {
+       "publish": "Событие опубликовано.",
+@@ -309,7 +310,9 @@
+     "success": "Платные продажи активированы. Комиссия {{fee}} учтена (симуляция).",
+     "alreadyActive": "Платные продажи уже активны.",
+     "failed": "Активация не удалась. Не выполнено:",
+-    "requestFailed": "Ошибка запроса активации: {{reason}}"
++    "requestFailed": "Ошибка запроса активации: {{reason}}",
++    "demoBadge": "демо",
++    "statusFailed": "Не удалось загрузить статус активации."
+   },
+   "organizer": {
+     "title": "Кабинет организатора",
+@@ -656,5 +659,61 @@
+       "account": "Аккаунт",
+       "technical": "Техническая проблема"
+     }
++  },
++  "campaigns": {
++    "upgradePending": "Фиксированные скидки, привязка к типу билета и отключение кампании требуют обновления кампаний на сервере, которое пока недоступно. Процентные кампании работают.",
++    "listTitle": "Кампании",
++    "loadFailed": "Не удалось загрузить кампании.",
++    "empty": "Для этого события кампаний пока нет.",
++    "state": {
++      "active": "Активна",
++      "scheduled": "Запланирована",
++      "expired": "Истекла",
++      "disabled": "Отключена"
++    },
++    "allTiers": "Все типы билетов",
++    "stats": {
++      "scans": "Переходы по ссылке",
++      "redemptions": "Использований",
++      "tickets": "Билетов",
++      "discount": "Выдано скидок",
++      "net": "Чистая выручка"
++    },
++    "destination": "Ссылка {{link}} открывает {{target}} с применённым кодом; скидку подтверждает сервер при оформлении.",
++    "copyLink": "Копировать ссылку",
++    "copied": "Ссылка скопирована.",
++    "copyFailed": "Не удалось скопировать автоматически. Ссылка: {{link}}",
++    "showQr": "QR-код",
++    "downloadQr": "Скачать QR (PNG)",
++    "enable": "Включить",
++    "disable": "Отключить",
++    "toggleFailed": "Не удалось изменить кампанию: {{reason}}",
++    "newTitle": "Новая кампания",
++    "name": "Название",
++    "code": "Промокод",
++    "discountType": "Тип скидки",
++    "type": {
++      "percent": "Процент",
++      "fixed_kzt": "Фиксированная сумма (₸)"
++    },
++    "percent": "Скидка, %",
++    "fixed": "Скидка, ₸",
++    "scope": "Применяется к",
++    "maxUses": "Максимум использований",
++    "starts": "Начало (необязательно)",
++    "ends": "Окончание",
++    "create": "Создать кампанию",
++    "fixErrors": "Исправьте следующее:",
++    "created": "Кампания {{code}} создана.",
++    "createFailed": "Не удалось создать кампанию: {{reason}}",
++    "errors": {
++      "name": "Введите название кампании.",
++      "code": "Код: 3–32 символа — буквы, цифры, - или _.",
++      "percent": "Процент — целое число от 1 до 100.",
++      "fixed": "Фиксированная скидка — целое число тенге, не меньше 1.",
++      "maxUses": "Максимум использований — не меньше 1.",
++      "ends": "Укажите, когда кампания заканчивается.",
++      "window": "Окончание должно быть позже начала."
++    }
+   }
+ }
+diff --git a/frontend/src/pages/EventManagePage.tsx b/frontend/src/pages/EventManagePage.tsx
+index e2f3470..5a5d4c0 100644
+--- a/frontend/src/pages/EventManagePage.tsx
++++ b/frontend/src/pages/EventManagePage.tsx
+@@ -6,12 +6,13 @@ import { Notice, type NoticeState } from '../components/Notice';
+ import { EventEditor } from '../components/organizer/EventEditor';
+ import { TicketTypeManager } from '../components/organizer/TicketTypeManager';
+ import { PaidSalesActivation } from '../components/organizer/PaidSalesActivation';
++import { CampaignManager } from '../components/organizer/CampaignManager';
+ import { formatEventDateTime } from '../services/tickets';
+ import { HttpError } from '../services/events';
+ import { organizerApi, type OrganizerEvent, type OrganizerTicketType } from '../services/organizer';
+ 
+-type Tab = 'details' | 'tickets' | 'paid';
+-const TABS: Tab[] = ['details', 'tickets', 'paid'];
++type Tab = 'details' | 'tickets' | 'paid' | 'campaigns';
++const TABS: Tab[] = ['details', 'tickets', 'paid', 'campaigns'];
+ 
+ const statusBadge: Record<OrganizerEvent['status'], string> = {
+   draft: 'bg-gray-100 text-gray-700',
+@@ -209,6 +210,7 @@ function EventManagePage() {
+         {tab === 'tickets' && (
+           <TicketTypeManager token={token} eventId={ev.id} types={types} readOnly={cancelled} paidSalesActive={paidActive} onChange={setTypes} />
+         )}
++        {tab === 'campaigns' && <CampaignManager token={token} event={ev} types={types} />}
+         {tab === 'paid' && (
+           <PaidSalesActivation token={token} event={ev} types={types}
+             onActivated={() => setEvent({ ...ev, paid_sales_status: 'ACTIVE' })}
+diff --git a/frontend/src/services/organizer.ts b/frontend/src/services/organizer.ts
+index add60a5..3728dc3 100644
+--- a/frontend/src/services/organizer.ts
++++ b/frontend/src/services/organizer.ts
+@@ -1,4 +1,5 @@
+ import { http } from './events';
++import { API_BASE_URL } from './config';
+ 
+ export type Phase = 'upcoming' | 'active' | 'completed' | 'cancelled';
+ 
+@@ -99,6 +100,55 @@ export interface ActivationResult {
+   checklist?: Checklist;
+ }
+ 
++export interface ActivationStatus {
++  event_id: string;
++  paid_sales_status: 'NONE' | 'ACTIVE' | 'SUSPENDED';
++  paid_sales_active: boolean;
++  activation_fee_kzt: number;
++  simulated: boolean;
++  checklist: Partial<Record<Exclude<ChecklistKey, 'paid_event_terms_accepted'>, { passed: boolean; simulated?: boolean; amount_kzt?: number }>>;
++}
++
++export type CampaignState = 'active' | 'scheduled' | 'expired' | 'disabled';
++export type DiscountType = 'percent' | 'fixed_kzt';
++
++export interface Campaign {
++  campaign_id: string;
++  event_id: string;
++  name: string;
++  code: string;
++  discount_percent: number | null;
++  discount_type?: DiscountType;
++  discount_value?: number | null;
++  ticket_type_id?: string | null;
++  max_uses: number;
++  starts_at?: string | null;
++  ends_at?: string | null;
++  is_disabled?: boolean;
++  state?: CampaignState;
++  qr_link?: string | null;
++  qr_scans: number;
++  orders: number;
++  tickets_sold: number;
++  gross_sales_kzt: number;
++  discount_total_kzt: number;
++  net_revenue_kzt: number;
++  conversion_rate?: number | null;
++}
++
++export interface CampaignInput {
++  event_id: string;
++  name: string;
++  code: string;
++  max_uses: number;
++  ends_at: string;
++  starts_at?: string | null;
++  discount_percent?: number;
++  discount_type?: DiscountType;
++  discount_value?: number;
++  ticket_type_id?: string | null;
++}
++
+ export interface Profile {
+   id: string;
+   email: string;
+@@ -108,6 +158,16 @@ export interface Profile {
+ }
+ export type TicketTypeInput = Partial<Omit<OrganizerTicketType, 'id' | 'event_id' | 'sold' | 'available' | 'reserved' | 'refunded' | 'checked_in'>>;
+ 
++let upgradeProbe: Promise<boolean> | null = null;
++
++export function campaignUpgradeAvailable(): Promise<boolean> {
++  upgradeProbe ??= fetch(`${API_BASE_URL}/openapi.json`)
++    .then((r) => (r.ok ? r.json() : null))
++    .then((spec) => Boolean(spec?.paths?.['/api/campaigns/{campaign_id}/disabled']))
++    .catch(() => false);
++  return upgradeProbe;
++}
++
+ const json = (body: unknown) => ({ body: JSON.stringify(body) });
+ 
+ export const organizerApi = {
+@@ -141,6 +201,16 @@ export const organizerApi = {
+       token,
+     ),
+ 
++  activation: (token: string, eventId: string) =>
++    http<ActivationStatus>(`/api/organizer/events/${eventId}/activation`, {}, token),
++
++  campaigns: (token: string, eventId: string) =>
++    http<{ campaigns: Campaign[] }>(`/api/organizer/campaigns/stats?event_id=${encodeURIComponent(eventId)}`, {}, token),
++  createCampaign: (token: string, body: CampaignInput) =>
++    http<{ qr_link?: string }>('/api/campaigns', { method: 'POST', ...json(body) }, token),
++  setCampaignDisabled: (token: string, campaignId: string, disabled: boolean) =>
++    http<unknown>(`/api/campaigns/${campaignId}/disabled`, { method: 'PATCH', ...json({ disabled }) }, token),
++
+   profile: (token: string) => http<Profile>('/api/users/me', {}, token),
+   savePayout: (token: string, payoutInfo: string) =>
+     http<Profile>('/api/users/me', { method: 'PUT', ...json({ payout_info: payoutInfo }) }, token),
+-- 
+2.43.0
+

@@ -1,0 +1,331 @@
+From 6589666af2051f3b1d32fc1f95000396a08b498f Mon Sep 17 00:00:00 2001
+From: Alpamys Beissenbek <alpabisen@gmail.com>
+Date: Sun, 22 Nov 2026 17:19:41 +0000
+Subject: [PATCH 2/5] FS-12: tier availability breakdown and cross-organizer
+ denial in the editor
+
+---
+ backend/main.py                               | 50 ++++++++++++++++++-
+ backend/tests/test_fs12_tier_counts.py        | 44 ++++++++++++++++
+ docs/evidence/FS-12/README.md                 | 38 ++++++++++++++
+ .../organizer/TicketTypeManager.tsx           |  8 +++
+ frontend/src/i18n/locales/en.json             |  6 ++-
+ frontend/src/i18n/locales/kk.json             |  6 ++-
+ frontend/src/i18n/locales/ru.json             |  6 ++-
+ frontend/src/pages/EventManagePage.tsx        |  6 +++
+ frontend/src/services/organizer.ts            |  5 +-
+ 9 files changed, 161 insertions(+), 8 deletions(-)
+ create mode 100644 backend/tests/test_fs12_tier_counts.py
+ create mode 100644 docs/evidence/FS-12/README.md
+
+diff --git a/backend/main.py b/backend/main.py
+index 2499794..edb0e9e 100644
+--- a/backend/main.py
++++ b/backend/main.py
+@@ -237,6 +237,52 @@ def sold_counts_for_event(db: Client, event_id: str) -> dict[str, int]:
+     return counts
+ 
+ 
++def tier_breakdown_for_event(db: Client, event_id: str) -> dict[str, dict]:
++    try:
++        rows = (
++            db.table("tickets")
++            .select("ticket_type_id, status")
++            .eq("event_id", event_id)
++            .execute()
++            .data
++            or []
++        )
++    except Exception as e:
++        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
++    out: dict[str, dict] = {}
++    for row in rows:
++        entry = out.setdefault(str(row.get("ticket_type_id")), {"refunded": 0, "checked_in": 0, "reserved": 0})
++        state = (row.get("status") or "").lower()
++        if state == "refunded":
++            entry["refunded"] += 1
++        elif state in ("checked_in", "used"):
++            entry["checked_in"] += 1
++    try:
++        holds = (
++            supabase.table("ticket_holds")
++            .select("ticket_type_id, quantity, expires_at")
++            .eq("event_id", event_id)
++            .eq("status", "active")
++            .execute()
++            .data
++            or []
++        )
++    except Exception:
++        return out
++    from datetime import datetime as _dt, timezone as _tz
++
++    now = _dt.now(_tz.utc)
++    for hold in holds:
++        try:
++            if _parse_ts(hold["expires_at"]) <= now:
++                continue
++        except Exception:
++            continue
++        entry = out.setdefault(str(hold.get("ticket_type_id")), {"refunded": 0, "checked_in": 0, "reserved": 0})
++        entry["reserved"] += int(hold.get("quantity") or 0)
++    return out
++
++
+ def with_sold_available(row: dict, sold: int) -> dict:
+     quantity = row.get("quantity")
+     available = None if quantity is None else max(int(quantity) - sold, 0)
+@@ -612,8 +658,10 @@ async def list_organizer_ticket_types(
+             detail=str(e),
+         )
+     sold_map = sold_counts_for_event(db, event_id)
++    breakdown = tier_breakdown_for_event(db, event_id)
++    zero = {"refunded": 0, "checked_in": 0, "reserved": 0}
+     return [
+-        with_sold_available(row, sold_map.get(str(row["id"]), 0))
++        {**with_sold_available(row, sold_map.get(str(row["id"]), 0)), **breakdown.get(str(row["id"]), zero)}
+         for row in (response.data or [])
+     ]
+ 
+diff --git a/backend/tests/test_fs12_tier_counts.py b/backend/tests/test_fs12_tier_counts.py
+new file mode 100644
+index 0000000..2199644
+--- /dev/null
++++ b/backend/tests/test_fs12_tier_counts.py
+@@ -0,0 +1,44 @@
++from datetime import datetime, timedelta, timezone
++
++from tests.test_pb18 import ORGANIZER, OTHER, event, run
++from tests.fakedb import FakeDB
++
++OTHER_ORG = ORGANIZER.model_copy(update={"id": "org-2"})
++
++
++def iso(h):
++    return (datetime.now(timezone.utc) + timedelta(hours=h)).isoformat()
++
++
++def db():
++    return FakeDB(
++        events=[event()],
++        ticket_types=[{"id": "tt-1", "event_id": "ev-1", "name": "GA", "price": 0, "quantity": 10, "is_hidden": False}],
++        tickets=[
++            {"event_id": "ev-1", "ticket_type_id": "tt-1", "status": "valid"},
++            {"event_id": "ev-1", "ticket_type_id": "tt-1", "status": "checked_in"},
++            {"event_id": "ev-1", "ticket_type_id": "tt-1", "status": "refunded"},
++            {"event_id": "ev-1", "ticket_type_id": "tt-1", "status": "cancelled"},
++        ],
++        ticket_holds=[
++            {"event_id": "ev-1", "ticket_type_id": "tt-1", "status": "active", "quantity": 2, "expires_at": iso(1)},
++            {"event_id": "ev-1", "ticket_type_id": "tt-1", "status": "active", "quantity": 5, "expires_at": iso(-1)},
++            {"event_id": "ev-1", "ticket_type_id": "tt-1", "status": "converted", "quantity": 3, "expires_at": iso(1)},
++        ],
++    )
++
++
++def test_tier_list_reports_every_count():
++    r = run(db(), ORGANIZER, "get", "/api/organizer/events/ev-1/ticket-types")
++    assert r.status_code == 200
++    tier = r.json()[0]
++    assert (tier["sold"], tier["available"]) == (2, 8)
++    assert (tier["reserved"], tier["refunded"], tier["checked_in"]) == (2, 1, 1)
++
++
++def test_other_organizer_is_denied():
++    assert run(db(), OTHER_ORG, "get", "/api/organizer/events/ev-1/ticket-types").status_code == 403
++
++
++def test_attendee_is_denied():
++    assert run(db(), OTHER, "get", "/api/organizer/events/ev-1/ticket-types").status_code == 403
+diff --git a/docs/evidence/FS-12/README.md b/docs/evidence/FS-12/README.md
+new file mode 100644
+index 0000000..7872f0a
+--- /dev/null
++++ b/docs/evidence/FS-12/README.md
+@@ -0,0 +1,38 @@
++# FS-12 evidence: organizer event and tier editor
++
++Base: `feature/FS-11-discovery-release` (stacked on `main` `7a89773`).
++
++## Pre-existing (not new work)
++Draft create/edit, preview, publish/unpublish/cancel, visibility/capacity/registration windows, free/paid
++tier create/edit/hide, role-gated routes (`RequireAuth roles=['organizer']`), backend owner checks
++(`load_owned_event`), event lifecycle tests (`test_pb18.py`). PB-13 / PB-18.
++
++## Changes in this ticket
++| File | Change |
++|---|---|
++| `backend/main.py` | Organizer ticket-type list now also returns `reserved` (unexpired active holds), `refunded`, `checked_in` per tier. Ownership is checked before the service client reads holds. Existing `sold` / `available` unchanged. |
++| `backend/tests/test_fs12_tier_counts.py` | Counts, other-organizer denial (403), attendee denial (403). |
++| `frontend/src/components/organizer/TicketTypeManager.tsx` | Shows available / reserved / sold / refunded / checked-in per tier. |
++| `frontend/src/pages/EventManagePage.tsx` | A 403/404 from another organizer's event URL shows "does not exist or you do not manage it", not a generic load error. |
++| `frontend/src/services/organizer.ts`, locales | New optional count fields, new strings in kk/ru/en. |
++
++## Commands run
++| Command | Result |
++|---|---|
++| `pytest -q` (backend) | 152 passed (149 baseline + 3 new) |
++| `npm run build` (frontend) | exit 0 |
++| `npm run lint` | exit 0, no new warnings |
++
++## Acceptance
++| Criterion | Status |
++|---|---|
++| Counts available/reserved/sold/refunded/checked-in | PASS at API level (fake DB); UI not exercised in a browser |
++| Save and reload values | NOT RUN (needs live backend) |
++| Inputs preserved on validation error | Source: form state is held in the editor and not reset on validation failure; NOT RUN in a browser |
++| Attendee denial / cross-organizer API denial | PASS (backend tests, 403) |
++| Cross-organizer URL denial in UI | Implemented; NOT RUN in a browser |
++
++## Known gaps
++- `reserved` counts holds through the service client; a deployed database must allow it (the backend already uses that client for public reads).
++- Event date inputs assume UTC+5 (Asia/Almaty); events saved in another timezone would display shifted. Not changed.
++- Real-database verification was not performed.
+diff --git a/frontend/src/components/organizer/TicketTypeManager.tsx b/frontend/src/components/organizer/TicketTypeManager.tsx
+index 76ad94e..65380ff 100644
+--- a/frontend/src/components/organizer/TicketTypeManager.tsx
++++ b/frontend/src/components/organizer/TicketTypeManager.tsx
+@@ -165,6 +165,14 @@ export function TicketTypeManager({ token, eventId, types, readOnly, paidSalesAc
+                     {' · '}{t('ticketTypes.maxPerOrderShort', { count: tt.max_per_order ?? 1 })}
+                     {' · '}{saleWindow(tt)}
+                   </p>
++                  {tt.reserved !== undefined && (
++                    <p className="mt-1 text-xs text-gray-500">
++                      {t('ticketTypes.counts', {
++                        available: tt.available ?? '∞', reserved: tt.reserved, sold: tt.sold,
++                        refunded: tt.refunded ?? 0, checkedIn: tt.checked_in ?? 0,
++                      })}
++                    </p>
++                  )}
+                 </div>
+                 <div className="flex shrink-0 items-center gap-3">
+                   <strong className="whitespace-nowrap">{paid ? formatKZT(tt.price ?? 0) : t('common.free')}</strong>
+diff --git a/frontend/src/i18n/locales/en.json b/frontend/src/i18n/locales/en.json
+index 7bf543b..637b92a 100644
+--- a/frontend/src/i18n/locales/en.json
++++ b/frontend/src/i18n/locales/en.json
+@@ -219,7 +219,8 @@
+       "publish": "Could not publish: {{reason}}",
+       "unpublish": "Could not unpublish: {{reason}}",
+       "cancel": "Could not cancel: {{reason}}"
+-    }
++    },
++    "noAccess": "This event does not exist or you do not manage it."
+   },
+   "ticketTypes": {
+     "empty": "No ticket types yet. Add a free or paid one.",
+@@ -261,7 +262,8 @@
+       "belowSold": "Quantity cannot be lower than already sold ({{sold}}).",
+       "maxPerOrder": "Max per order must be at least 1.",
+       "saleWindow": "Sale end must be after sale start."
+-    }
++    },
++    "counts": "Available {{available}} · Reserved {{reserved}} · Sold {{sold}} · Refunded {{refunded}} · Checked in {{checkedIn}}"
+   },
+   "activation": {
+     "statusActive": "Paid sales are active",
+diff --git a/frontend/src/i18n/locales/kk.json b/frontend/src/i18n/locales/kk.json
+index be1f89e..07c7619 100644
+--- a/frontend/src/i18n/locales/kk.json
++++ b/frontend/src/i18n/locales/kk.json
+@@ -219,7 +219,8 @@
+       "publish": "Жариялау мүмкін болмады: {{reason}}",
+       "unpublish": "Жариялауды тоқтату мүмкін болмады: {{reason}}",
+       "cancel": "Тоқтату мүмкін болмады: {{reason}}"
+-    }
++    },
++    "noAccess": "Мұндай іс-шара жоқ немесе сіз оны басқармайсыз."
+   },
+   "ticketTypes": {
+     "empty": "Билет түрлері әлі жоқ. Тегін немесе ақылы түрін қосыңыз.",
+@@ -260,7 +261,8 @@
+       "belowSold": "Саны сатылғаннан ({{sold}}) аз болмауы керек.",
+       "maxPerOrder": "Бір тапсырыстағы ең көп саны кемінде 1.",
+       "saleWindow": "Сату аяқталуы басталуынан кейін болуы керек."
+-    }
++    },
++    "counts": "Қолжетімді {{available}} · Брондалған {{reserved}} · Сатылды {{sold}} · Қайтарылды {{refunded}} · Кіргені белгіленді {{checkedIn}}"
+   },
+   "activation": {
+     "statusActive": "Ақылы сату белсенді",
+diff --git a/frontend/src/i18n/locales/ru.json b/frontend/src/i18n/locales/ru.json
+index 5f7386d..d0a5c59 100644
+--- a/frontend/src/i18n/locales/ru.json
++++ b/frontend/src/i18n/locales/ru.json
+@@ -221,7 +221,8 @@
+       "publish": "Не удалось опубликовать: {{reason}}",
+       "unpublish": "Не удалось снять с публикации: {{reason}}",
+       "cancel": "Не удалось отменить: {{reason}}"
+-    }
++    },
++    "noAccess": "Такого события нет, либо вы им не управляете."
+   },
+   "ticketTypes": {
+     "empty": "Типов билетов пока нет. Добавьте бесплатный или платный.",
+@@ -262,7 +263,8 @@
+       "belowSold": "Количество не может быть меньше уже проданного ({{sold}}).",
+       "maxPerOrder": "Максимум в заказе — не меньше 1.",
+       "saleWindow": "Конец продаж должен быть позже начала."
+-    }
++    },
++    "counts": "Доступно {{available}} · В резерве {{reserved}} · Продано {{sold}} · Возвращено {{refunded}} · Отмечено на входе {{checkedIn}}"
+   },
+   "activation": {
+     "statusActive": "Платные продажи активны",
+diff --git a/frontend/src/pages/EventManagePage.tsx b/frontend/src/pages/EventManagePage.tsx
+index 1c60316..e2f3470 100644
+--- a/frontend/src/pages/EventManagePage.tsx
++++ b/frontend/src/pages/EventManagePage.tsx
+@@ -7,6 +7,7 @@ import { EventEditor } from '../components/organizer/EventEditor';
+ import { TicketTypeManager } from '../components/organizer/TicketTypeManager';
+ import { PaidSalesActivation } from '../components/organizer/PaidSalesActivation';
+ import { formatEventDateTime } from '../services/tickets';
++import { HttpError } from '../services/events';
+ import { organizerApi, type OrganizerEvent, type OrganizerTicketType } from '../services/organizer';
+ 
+ type Tab = 'details' | 'tickets' | 'paid';
+@@ -52,6 +53,10 @@ function EventManagePage() {
+       setTypes(tt);
+       setState(found ? 'ok' : 'missing');
+     } catch (e) {
++      if (e instanceof HttpError && (e.status === 403 || e.status === 404)) {
++        setState('missing');
++        return;
++      }
+       setLoadError((e as Error).message);
+       setState('error');
+     }
+@@ -78,6 +83,7 @@ function EventManagePage() {
+     return (
+       <main className="mx-auto max-w-5xl space-y-3 p-6">
+         <h1 className="text-2xl font-bold">{t('manage.notFound')}</h1>
++        <p className="text-sm text-gray-600">{t('manage.noAccess')}</p>
+         <Link to="/organizer" className="text-blue-600">{t('manage.backToDashboard')}</Link>
+       </main>
+     );
+diff --git a/frontend/src/services/organizer.ts b/frontend/src/services/organizer.ts
+index f02ad43..add60a5 100644
+--- a/frontend/src/services/organizer.ts
++++ b/frontend/src/services/organizer.ts
+@@ -36,6 +36,9 @@ export interface OrganizerTicketType {
+   is_hidden: boolean | null;
+   sold: number;
+   available: number | null;
++  reserved?: number;
++  refunded?: number;
++  checked_in?: number;
+ }
+ 
+ export interface EventAnalytics {
+@@ -103,7 +106,7 @@ export interface Profile {
+   payout_info: string | null;
+   role: string | null;
+ }
+-export type TicketTypeInput = Partial<Omit<OrganizerTicketType, 'id' | 'event_id' | 'sold' | 'available'>>;
++export type TicketTypeInput = Partial<Omit<OrganizerTicketType, 'id' | 'event_id' | 'sold' | 'available' | 'reserved' | 'refunded' | 'checked_in'>>;
+ 
+ const json = (body: unknown) => ({ body: JSON.stringify(body) });
+ 
+-- 
+2.43.0
+
