@@ -1,4 +1,5 @@
 import { http } from './events';
+import { API_BASE_URL } from './config';
 
 export type Phase = 'upcoming' | 'active' | 'completed' | 'cancelled';
 
@@ -99,6 +100,55 @@ export interface ActivationResult {
   checklist?: Checklist;
 }
 
+export interface ActivationStatus {
+  event_id: string;
+  paid_sales_status: 'NONE' | 'ACTIVE' | 'SUSPENDED';
+  paid_sales_active: boolean;
+  activation_fee_kzt: number;
+  simulated: boolean;
+  checklist: Partial<Record<Exclude<ChecklistKey, 'paid_event_terms_accepted'>, { passed: boolean; simulated?: boolean; amount_kzt?: number }>>;
+}
+
+export type CampaignState = 'active' | 'scheduled' | 'expired' | 'disabled';
+export type DiscountType = 'percent' | 'fixed_kzt';
+
+export interface Campaign {
+  campaign_id: string;
+  event_id: string;
+  name: string;
+  code: string;
+  discount_percent: number | null;
+  discount_type?: DiscountType;
+  discount_value?: number | null;
+  ticket_type_id?: string | null;
+  max_uses: number;
+  starts_at?: string | null;
+  ends_at?: string | null;
+  is_disabled?: boolean;
+  state?: CampaignState;
+  qr_link?: string | null;
+  qr_scans: number;
+  orders: number;
+  tickets_sold: number;
+  gross_sales_kzt: number;
+  discount_total_kzt: number;
+  net_revenue_kzt: number;
+  conversion_rate?: number | null;
+}
+
+export interface CampaignInput {
+  event_id: string;
+  name: string;
+  code: string;
+  max_uses: number;
+  ends_at: string;
+  starts_at?: string | null;
+  discount_percent?: number;
+  discount_type?: DiscountType;
+  discount_value?: number;
+  ticket_type_id?: string | null;
+}
+
 export interface Profile {
   id: string;
   email: string;
@@ -107,6 +157,16 @@ export interface Profile {
   role: string | null;
 }
 export type TicketTypeInput = Partial<Omit<OrganizerTicketType, 'id' | 'event_id' | 'sold' | 'available' | 'reserved' | 'refunded' | 'checked_in'>>;
+
+let upgradeProbe: Promise<boolean> | null = null;
+
+export function campaignUpgradeAvailable(): Promise<boolean> {
+  upgradeProbe ??= fetch(`${API_BASE_URL}/openapi.json`)
+    .then((r) => (r.ok ? r.json() : null))
+    .then((spec) => Boolean(spec?.paths?.['/api/campaigns/{campaign_id}/disabled']))
+    .catch(() => false);
+  return upgradeProbe;
+}
 
 const json = (body: unknown) => ({ body: JSON.stringify(body) });
 
@@ -140,6 +200,16 @@ export const organizerApi = {
       { method: 'POST', ...json({ paid_event_terms_accepted: termsAccepted }) },
       token,
     ),
+
+  activation: (token: string, eventId: string) =>
+    http<ActivationStatus>(`/api/organizer/events/${eventId}/activation`, {}, token),
+
+  campaigns: (token: string, eventId: string) =>
+    http<{ campaigns: Campaign[] }>(`/api/organizer/campaigns/stats?event_id=${encodeURIComponent(eventId)}`, {}, token),
+  createCampaign: (token: string, body: CampaignInput) =>
+    http<{ qr_link?: string }>('/api/campaigns', { method: 'POST', ...json(body) }, token),
+  setCampaignDisabled: (token: string, campaignId: string, disabled: boolean) =>
+    http<unknown>(`/api/campaigns/${campaignId}/disabled`, { method: 'PATCH', ...json({ disabled }) }, token),
 
   profile: (token: string) => http<Profile>('/api/users/me', {}, token),
   savePayout: (token: string, payoutInfo: string) =>

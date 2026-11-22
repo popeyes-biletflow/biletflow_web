@@ -208,7 +208,8 @@
     "tabs": {
       "details": "Details",
       "tickets": "Ticket types",
-      "paid": "Paid sales"
+      "paid": "Paid sales",
+      "campaigns": "Campaigns"
     },
     "done": {
       "publish": "Event published.",
@@ -309,7 +310,9 @@
     "success": "Paid sales activated. Activation fee {{fee}} recorded (simulated).",
     "alreadyActive": "Paid sales are already active for this event.",
     "failed": "Activation failed. Missing requirements:",
-    "requestFailed": "Activation request failed: {{reason}}"
+    "requestFailed": "Activation request failed: {{reason}}",
+    "demoBadge": "demo",
+    "statusFailed": "Could not load the activation status."
   },
   "organizer": {
     "title": "Organizer dashboard",
@@ -655,6 +658,62 @@
       "check_in": "Check-in",
       "account": "Account",
       "technical": "Technical problem"
+    }
+  },
+  "campaigns": {
+    "upgradePending": "Fixed-amount discounts, per-tier scope and disabling a campaign need the campaign upgrade on the server, which is not available yet. Percent campaigns work now.",
+    "listTitle": "Campaigns",
+    "loadFailed": "Could not load campaigns.",
+    "empty": "No campaigns for this event yet.",
+    "state": {
+      "active": "Active",
+      "scheduled": "Scheduled",
+      "expired": "Expired",
+      "disabled": "Disabled"
+    },
+    "allTiers": "All ticket types",
+    "stats": {
+      "scans": "Link visits",
+      "redemptions": "Redemptions",
+      "tickets": "Tickets",
+      "discount": "Discount given",
+      "net": "Net revenue"
+    },
+    "destination": "Tracking link {{link}} opens {{target}} with the code applied; the discount is confirmed by the server at checkout.",
+    "copyLink": "Copy link",
+    "copied": "Link copied.",
+    "copyFailed": "Could not copy automatically. Link: {{link}}",
+    "showQr": "QR code",
+    "downloadQr": "Download QR (PNG)",
+    "enable": "Enable",
+    "disable": "Disable",
+    "toggleFailed": "Could not change the campaign: {{reason}}",
+    "newTitle": "New campaign",
+    "name": "Name",
+    "code": "Promo code",
+    "discountType": "Discount type",
+    "type": {
+      "percent": "Percent",
+      "fixed_kzt": "Fixed amount (₸)"
+    },
+    "percent": "Discount, %",
+    "fixed": "Discount, ₸",
+    "scope": "Applies to",
+    "maxUses": "Maximum redemptions",
+    "starts": "Starts (optional)",
+    "ends": "Expires",
+    "create": "Create campaign",
+    "fixErrors": "Please fix the following:",
+    "created": "Campaign {{code}} created.",
+    "createFailed": "Could not create the campaign: {{reason}}",
+    "errors": {
+      "name": "Enter a campaign name.",
+      "code": "Code: 3–32 letters, digits, - or _.",
+      "percent": "Percent must be a whole number from 1 to 100.",
+      "fixed": "Fixed discount must be a whole number of tenge, at least 1.",
+      "maxUses": "Maximum redemptions must be at least 1.",
+      "ends": "Choose when the campaign expires.",
+      "window": "The expiry must be after the start."
     }
   }
 }

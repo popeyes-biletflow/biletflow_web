@@ -6,12 +6,13 @@ import { Notice, type NoticeState } from '../components/Notice';
 import { EventEditor } from '../components/organizer/EventEditor';
 import { TicketTypeManager } from '../components/organizer/TicketTypeManager';
 import { PaidSalesActivation } from '../components/organizer/PaidSalesActivation';
+import { CampaignManager } from '../components/organizer/CampaignManager';
 import { formatEventDateTime } from '../services/tickets';
 import { HttpError } from '../services/events';
 import { organizerApi, type OrganizerEvent, type OrganizerTicketType } from '../services/organizer';
 
-type Tab = 'details' | 'tickets' | 'paid';
-const TABS: Tab[] = ['details', 'tickets', 'paid'];
+type Tab = 'details' | 'tickets' | 'paid' | 'campaigns';
+const TABS: Tab[] = ['details', 'tickets', 'paid', 'campaigns'];
 
 const statusBadge: Record<OrganizerEvent['status'], string> = {
   draft: 'bg-gray-100 text-gray-700',
@@ -209,6 +210,7 @@ function EventManagePage() {
         {tab === 'tickets' && (
           <TicketTypeManager token={token} eventId={ev.id} types={types} readOnly={cancelled} paidSalesActive={paidActive} onChange={setTypes} />
         )}
+        {tab === 'campaigns' && <CampaignManager token={token} event={ev} types={types} />}
         {tab === 'paid' && (
           <PaidSalesActivation token={token} event={ev} types={types}
             onActivated={() => setEvent({ ...ev, paid_sales_status: 'ACTIVE' })}

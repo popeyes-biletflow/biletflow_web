@@ -1,5 +1,6 @@
 import secrets
 import uuid
+from datetime import datetime, timezone
 
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Literal
@@ -14,7 +15,7 @@ from pydantic import BaseModel, Field
 import notify
 from crypto import ticket_qr_payload
 from deps import db_for_user, get_current_user
-from promo import call_rpc, require_organizer
+from promo import PUBLIC_API_URL, call_rpc, require_organizer
 from schemas import CurrentUser
 
 router = APIRouter()
@@ -197,7 +198,49 @@ async def campaigns_stats(
     db = db_for_user(user.access_token)
     data = call_rpc(db, "campaign_stats", {"p_event_id": event_id}) or {}
     campaigns = data.get("campaigns") or []
+    details = campaign_details(db, [c["campaign_id"] for c in campaigns if c.get("campaign_id")])
     for c in campaigns:
         scans = c.get("qr_scans") or 0
         c["conversion_rate"] = round(c["orders"] / scans, 4) if scans else None
+        c.update(details.get(str(c.get("campaign_id")), {}))
     return {"campaigns": campaigns, "totals": data.get("totals") or {}}
+
+
+def campaign_state(row: dict, now: datetime) -> str:
+    if row.get("is_disabled"):
+        return "disabled"
+    starts, ends = row.get("starts_at"), row.get("ends_at")
+    if starts and parse_ts(starts) > now:
+        return "scheduled"
+    if ends and parse_ts(ends) <= now:
+        return "expired"
+    return "active"
+
+
+def parse_ts(raw) -> datetime:
+    value = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+def campaign_details(db, ids: list) -> dict[str, dict]:
+    if not ids:
+        return {}
+    try:
+        rows = db.table("campaigns").select("*").in_("id", ids).execute().data or []
+    except Exception:
+        return {}
+    now = datetime.now(timezone.utc)
+    out = {}
+    for row in rows:
+        slug = row.get("qr_slug")
+        out[str(row["id"])] = {
+            "starts_at": row.get("starts_at"),
+            "ends_at": row.get("ends_at"),
+            "is_disabled": bool(row.get("is_disabled")),
+            "discount_type": row.get("discount_type") or "percent",
+            "discount_value": row.get("discount_value") if row.get("discount_value") is not None else row.get("discount_percent"),
+            "ticket_type_id": row.get("ticket_type_id"),
+            "qr_link": f"{PUBLIC_API_URL}/c/{slug}" if slug else None,
+            "state": campaign_state(row, now),
+        }
+    return out
