@@ -209,7 +209,9 @@
       "details": "Details",
       "tickets": "Ticket types",
       "paid": "Paid sales",
-      "campaigns": "Campaigns"
+      "campaigns": "Campaigns",
+      "attendees": "Attendees",
+      "history": "History"
     },
     "done": {
       "publish": "Event published.",
@@ -221,7 +223,14 @@
       "unpublish": "Could not unpublish: {{reason}}",
       "cancel": "Could not cancel: {{reason}}"
     },
-    "noAccess": "This event does not exist or you do not manage it."
+    "noAccess": "This event does not exist or you do not manage it.",
+    "duplicate": "Duplicate",
+    "duplicateTitle": "Duplicate as a new draft",
+    "duplicateHint": "Copies the details and ticket types only. Attendees, orders, payments, support cases and history are not copied; paid sales start inactive.",
+    "duplicateStart": "New start (optional)",
+    "duplicateConfirm": "Create draft copy",
+    "duplicateFailed": "Could not duplicate the event: {{reason}}",
+    "copySuffix": "(copy)"
   },
   "ticketTypes": {
     "empty": "No ticket types yet. Add a free or paid one.",
@@ -715,5 +724,41 @@
       "ends": "Choose when the campaign expires.",
       "window": "The expiry must be after the start."
     }
+  },
+  "history": {
+    "action": "Action",
+    "loadFailed": "Could not load the history.",
+    "empty": "No recorded activity yet.",
+    "noMatch": "No entries match the filters.",
+    "system": "System",
+    "showing": "Showing {{shown}} of {{total}}",
+    "more": "Show more"
+  },
+  "roster": {
+    "unavailable": "The attendee roster and CSV export need the organizer roster API on the server, which is not available yet.",
+    "refundUnavailable": "Refunds need the refund API on the server, which is not available yet. Refund buttons are hidden until it is.",
+    "name": "Name",
+    "ticketType": "Ticket type",
+    "statusCol": "Status",
+    "checkedIn": "Checked in",
+    "status": {
+      "valid": "Valid",
+      "checked_in": "Checked in",
+      "refunded": "Refunded",
+      "cancelled": "Cancelled"
+    },
+    "export": "Export CSV",
+    "exported": "Exported {{count}} attendees.",
+    "exportFailed": "Export failed: {{reason}}",
+    "privacy": "The roster and CSV contain names, ticket type, status and check-in time only; contact details are not exported.",
+    "loadFailed": "Could not load the roster.",
+    "empty": "No attendees.",
+    "refund": "Refund order",
+    "confirmRefund": "Refund the whole order that includes {{name}}? Every ticket in that order is invalidated. This is a simulated refund.",
+    "refunded": "Order refunded.",
+    "refundFailed": "Refund failed: {{reason}}",
+    "prev": "Previous",
+    "next": "Next",
+    "range": "{{from}}–{{to}} of {{total}}"
   }
 }

@@ -149,6 +149,40 @@ export interface CampaignInput {
   ticket_type_id?: string | null;
 }
 
+export interface HistoryEntry {
+  id: string | number;
+  action: string;
+  created_at: string;
+  performed_by: string | null;
+  performed_by_name: string | null;
+  metadata: Record<string, unknown> | null;
+}
+
+export interface Attendee {
+  ticket_id: string;
+  attendee_name: string | null;
+  attendee_email: string | null;
+  ticket_type: string | null;
+  status: string;
+  order_id: string | null;
+  checked_in_at: string | null;
+  created_at: string | null;
+}
+
+export interface AttendeePage {
+  total: number;
+  limit: number;
+  offset: number;
+  items: Attendee[];
+}
+
+export interface DuplicateResult {
+  event_id: string;
+  source_event_id: string;
+  status: 'draft';
+  ticket_types_copied: number;
+}
+
 export interface Profile {
   id: string;
   email: string;
@@ -158,15 +192,17 @@ export interface Profile {
 }
 export type TicketTypeInput = Partial<Omit<OrganizerTicketType, 'id' | 'event_id' | 'sold' | 'available' | 'reserved' | 'refunded' | 'checked_in'>>;
 
-let upgradeProbe: Promise<boolean> | null = null;
+let specProbe: Promise<Record<string, unknown>> | null = null;
 
-export function campaignUpgradeAvailable(): Promise<boolean> {
-  upgradeProbe ??= fetch(`${API_BASE_URL}/openapi.json`)
+export function apiSupports(path: string): Promise<boolean> {
+  specProbe ??= fetch(`${API_BASE_URL}/openapi.json`)
     .then((r) => (r.ok ? r.json() : null))
-    .then((spec) => Boolean(spec?.paths?.['/api/campaigns/{campaign_id}/disabled']))
-    .catch(() => false);
-  return upgradeProbe;
+    .then((spec) => (spec?.paths ?? {}) as Record<string, unknown>)
+    .catch(() => ({}));
+  return specProbe.then((paths) => path in paths);
 }
+
+export const campaignUpgradeAvailable = () => apiSupports('/api/campaigns/{campaign_id}/disabled');
 
 const json = (body: unknown) => ({ body: JSON.stringify(body) });
 
@@ -210,6 +246,17 @@ export const organizerApi = {
     http<{ qr_link?: string }>('/api/campaigns', { method: 'POST', ...json(body) }, token),
   setCampaignDisabled: (token: string, campaignId: string, disabled: boolean) =>
     http<unknown>(`/api/campaigns/${campaignId}/disabled`, { method: 'PATCH', ...json({ disabled }) }, token),
+
+  history: (token: string, eventId: string) =>
+    http<HistoryEntry[]>(`/api/organizer/events/${eventId}/history`, {}, token),
+  duplicate: (token: string, eventId: string, body: { title?: string; starts_at?: string | null }) =>
+    http<DuplicateResult>(`/api/organizer/events/${eventId}/duplicate`, { method: 'POST', ...json(body) }, token),
+  attendees: (token: string, eventId: string, f: { status?: string; limit: number; offset: number }) => {
+    const q = new URLSearchParams({ limit: String(f.limit), offset: String(f.offset), ...(f.status ? { status: f.status } : {}) });
+    return http<AttendeePage>(`/api/organizer/events/${eventId}/attendees?${q}`, {}, token);
+  },
+  refundOrder: (token: string, orderId: string, reason?: string) =>
+    http<unknown>(`/api/organizer/orders/${orderId}/refund`, { method: 'POST', ...json(reason ? { reason } : {}) }, token),
 
   profile: (token: string) => http<Profile>('/api/users/me', {}, token),
   savePayout: (token: string, payoutInfo: string) =>
