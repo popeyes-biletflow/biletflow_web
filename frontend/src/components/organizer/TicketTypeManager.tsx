@@ -165,6 +165,14 @@ export function TicketTypeManager({ token, eventId, types, readOnly, paidSalesAc
                     {' · '}{t('ticketTypes.maxPerOrderShort', { count: tt.max_per_order ?? 1 })}
                     {' · '}{saleWindow(tt)}
                   </p>
+                  {tt.reserved !== undefined && (
+                    <p className="mt-1 text-xs text-gray-500">
+                      {t('ticketTypes.counts', {
+                        available: tt.available ?? '∞', reserved: tt.reserved, sold: tt.sold,
+                        refunded: tt.refunded ?? 0, checkedIn: tt.checked_in ?? 0,
+                      })}
+                    </p>
+                  )}
                 </div>
                 <div className="flex shrink-0 items-center gap-3">
                   <strong className="whitespace-nowrap">{paid ? formatKZT(tt.price ?? 0) : t('common.free')}</strong>

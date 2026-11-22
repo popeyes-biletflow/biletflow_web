@@ -219,7 +219,8 @@
       "publish": "Could not publish: {{reason}}",
       "unpublish": "Could not unpublish: {{reason}}",
       "cancel": "Could not cancel: {{reason}}"
-    }
+    },
+    "noAccess": "This event does not exist or you do not manage it."
   },
   "ticketTypes": {
     "empty": "No ticket types yet. Add a free or paid one.",
@@ -261,7 +262,8 @@
       "belowSold": "Quantity cannot be lower than already sold ({{sold}}).",
       "maxPerOrder": "Max per order must be at least 1.",
       "saleWindow": "Sale end must be after sale start."
-    }
+    },
+    "counts": "Available {{available}} · Reserved {{reserved}} · Sold {{sold}} · Refunded {{refunded}} · Checked in {{checkedIn}}"
   },
   "activation": {
     "statusActive": "Paid sales are active",

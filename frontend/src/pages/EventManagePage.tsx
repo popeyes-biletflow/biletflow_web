@@ -7,6 +7,7 @@ import { EventEditor } from '../components/organizer/EventEditor';
 import { TicketTypeManager } from '../components/organizer/TicketTypeManager';
 import { PaidSalesActivation } from '../components/organizer/PaidSalesActivation';
 import { formatEventDateTime } from '../services/tickets';
+import { HttpError } from '../services/events';
 import { organizerApi, type OrganizerEvent, type OrganizerTicketType } from '../services/organizer';
 
 type Tab = 'details' | 'tickets' | 'paid';
@@ -52,6 +53,10 @@ function EventManagePage() {
       setTypes(tt);
       setState(found ? 'ok' : 'missing');
     } catch (e) {
+      if (e instanceof HttpError && (e.status === 403 || e.status === 404)) {
+        setState('missing');
+        return;
+      }
       setLoadError((e as Error).message);
       setState('error');
     }
@@ -78,6 +83,7 @@ function EventManagePage() {
     return (
       <main className="mx-auto max-w-5xl space-y-3 p-6">
         <h1 className="text-2xl font-bold">{t('manage.notFound')}</h1>
+        <p className="text-sm text-gray-600">{t('manage.noAccess')}</p>
         <Link to="/organizer" className="text-blue-600">{t('manage.backToDashboard')}</Link>
       </main>
     );

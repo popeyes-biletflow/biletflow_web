@@ -36,6 +36,9 @@ export interface OrganizerTicketType {
   is_hidden: boolean | null;
   sold: number;
   available: number | null;
+  reserved?: number;
+  refunded?: number;
+  checked_in?: number;
 }
 
 export interface EventAnalytics {
@@ -103,7 +106,7 @@ export interface Profile {
   payout_info: string | null;
   role: string | null;
 }
-export type TicketTypeInput = Partial<Omit<OrganizerTicketType, 'id' | 'event_id' | 'sold' | 'available'>>;
+export type TicketTypeInput = Partial<Omit<OrganizerTicketType, 'id' | 'event_id' | 'sold' | 'available' | 'reserved' | 'refunded' | 'checked_in'>>;
 
 const json = (body: unknown) => ({ body: JSON.stringify(body) });
 

@@ -237,6 +237,52 @@ def sold_counts_for_event(db: Client, event_id: str) -> dict[str, int]:
     return counts
 
 
+def tier_breakdown_for_event(db: Client, event_id: str) -> dict[str, dict]:
+    try:
+        rows = (
+            db.table("tickets")
+            .select("ticket_type_id, status")
+            .eq("event_id", event_id)
+            .execute()
+            .data
+            or []
+        )
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+    out: dict[str, dict] = {}
+    for row in rows:
+        entry = out.setdefault(str(row.get("ticket_type_id")), {"refunded": 0, "checked_in": 0, "reserved": 0})
+        state = (row.get("status") or "").lower()
+        if state == "refunded":
+            entry["refunded"] += 1
+        elif state in ("checked_in", "used"):
+            entry["checked_in"] += 1
+    try:
+        holds = (
+            supabase.table("ticket_holds")
+            .select("ticket_type_id, quantity, expires_at")
+            .eq("event_id", event_id)
+            .eq("status", "active")
+            .execute()
+            .data
+            or []
+        )
+    except Exception:
+        return out
+    from datetime import datetime as _dt, timezone as _tz
+
+    now = _dt.now(_tz.utc)
+    for hold in holds:
+        try:
+            if _parse_ts(hold["expires_at"]) <= now:
+                continue
+        except Exception:
+            continue
+        entry = out.setdefault(str(hold.get("ticket_type_id")), {"refunded": 0, "checked_in": 0, "reserved": 0})
+        entry["reserved"] += int(hold.get("quantity") or 0)
+    return out
+
+
 def with_sold_available(row: dict, sold: int) -> dict:
     quantity = row.get("quantity")
     available = None if quantity is None else max(int(quantity) - sold, 0)
@@ -612,8 +658,10 @@ async def list_organizer_ticket_types(
             detail=str(e),
         )
     sold_map = sold_counts_for_event(db, event_id)
+    breakdown = tier_breakdown_for_event(db, event_id)
+    zero = {"refunded": 0, "checked_in": 0, "reserved": 0}
     return [
-        with_sold_available(row, sold_map.get(str(row["id"]), 0))
+        {**with_sold_available(row, sold_map.get(str(row["id"]), 0)), **breakdown.get(str(row["id"]), zero)}
         for row in (response.data or [])
     ]
 
