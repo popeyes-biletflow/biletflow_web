@@ -6,7 +6,8 @@
 
 - ticket_types.quantity = вместимость типа билета (None = без лимита)
 - билет считается проданным, если статус не cancelled / refunded
-- суммы берём из заказа; у старых заказов нет subtotal_amount, тогда берём цену типа билета
+- суммы считаем по заказу (не по билету): *_kzt у новых заказов, *_amount у старых,
+  если сумм нет — цена типа билета × количество
 """
 from datetime import datetime, timezone
 
@@ -63,46 +64,37 @@ def percent(part, whole):
     return round(part * 100 / whole, 1)
 
 
+def first_set(row, *keys):
+    # у заказов через холд колонки *_kzt, у старых (через /register) *_amount
+    for k in keys:
+        if row.get(k) is not None:
+            return row[k]
+    return None
+
+
+def order_money(o, price, qty):
+    """(subtotal, discount, fee, total) одного заказа — считаем по заказу, а не по билету."""
+    subtotal = first_set(o, "subtotal_kzt", "subtotal_amount")
+    if subtotal is None:
+        subtotal = price * qty
+    discount = first_set(o, "discount_kzt", "discount_amount") or 0
+    fee = first_set(o, "fee_kzt", "fee_amount") or 0
+    total = o.get("total_amount")
+    if total is None:
+        total = int(subtotal) - int(discount) + int(fee)
+    return int(subtotal), int(discount), int(fee), int(total)
+
+
 def compute_event_analytics(event, ticket_types, tickets, orders,
-                            date_from=None, date_to=None, ticket_type_id=None, now=None):
+                            date_from=None, date_to=None, ticket_type_id=None, now=None, promo_codes=None):
+    """promo_codes: {promo_code_id: code} — коды для заказов, оформленных через холд."""
     tz_name = event.get("timezone") or "Asia/Almaty"
+    promo_codes = promo_codes or {}
 
     # фильтр по типу билета
     types = [t for t in ticket_types if ticket_type_id is None or str(t["id"]) == str(ticket_type_id)]
     type_by_id = {str(t["id"]): t for t in types}
     tickets = [t for t in tickets if str(t.get("ticket_type_id")) in type_by_id]
-
-    def get_order(t):
-        return orders.get(str(t.get("order_id")), {})
-
-    def sale_day(t):
-        ts = parse_ts(get_order(t).get("created_at"))
-        return local_day(ts, tz_name) if ts else None
-
-    def in_range(t):
-        if date_from is None and date_to is None:
-            return True
-        day = sale_day(t)
-        if day is None:
-            return False
-        if date_from and day < date_from:
-            return False
-        if date_to and day > date_to:
-            return False
-        return True
-
-    def money(t):
-        """(subtotal, discount, fee, total) по заказу билета"""
-        o = get_order(t)
-        price = int(type_by_id.get(str(t.get("ticket_type_id")), {}).get("price") or 0)
-        subtotal = int(o["subtotal_amount"]) if o.get("subtotal_amount") is not None else price
-        discount = int(o.get("discount_amount") or 0)
-        fee = int(o.get("fee_amount") or 0)
-        if o.get("total_amount") is not None:
-            total = int(o["total_amount"])
-        else:
-            total = subtotal - discount + fee
-        return subtotal, discount, fee, total
 
     def status(t):
         return (t.get("status") or "").lower()
@@ -125,31 +117,63 @@ def compute_event_analytics(event, ticket_types, tickets, orders,
     sold = len(valid)
     remaining = None if capacity is None else max(capacity - sold, 0)
 
-    # выручка (только за выбранный период)
-    sold_in_range = [t for t in valid if in_range(t)]
-    refunded_in_range = [t for t in refunded if in_range(t)]
-    gross = 0
-    discounts = 0
-    fees = 0
-    for t in sold_in_range + refunded_in_range:
-        s, d, f, _ = money(t)
-        gross += s
-        discounts += d
-        fees += f
-    refunds_total = sum(money(t)[3] for t in refunded_in_range)
+    # ---- деньги: группируем билеты по заказам, каждый заказ считаем один раз ----
+    by_order = {}
+    for t in tickets:
+        oid = str(t.get("order_id") or "")
+        if oid in orders:
+            by_order.setdefault(oid, []).append(t)
+
+    def in_range(day):
+        if date_from is None and date_to is None:
+            return True
+        if day is None:
+            return False
+        if date_from and day < date_from:
+            return False
+        if date_to and day > date_to:
+            return False
+        return True
+
+    order_rows = []
+    for oid, o_tickets in by_order.items():
+        o = orders[oid]
+        ts = parse_ts(o.get("created_at"))
+        day = local_day(ts, tz_name) if ts else None
+        if not in_range(day):
+            continue
+        type_id = str(o.get("ticket_type_id") or o_tickets[0].get("ticket_type_id"))
+        price = int(type_by_id.get(type_id, {}).get("price") or 0)
+        qty = int(o.get("quantity") or len(o_tickets))
+        subtotal, discount, fee, total = order_money(o, price, qty)
+        active = [t for t in o_tickets if status(t) not in VOID]
+        # заказ возвращён, если так помечен или все его билеты возвращены
+        is_refunded = (o.get("status") or "").lower() == "refunded" or (
+            len(active) == 0 and any(status(t) == "refunded" for t in o_tickets))
+        code = promo_codes.get(str(o.get("promo_code_id"))) or o.get("promo_code")
+        order_rows.append({
+            "id": oid, "day": day, "type_id": type_id, "qty": qty, "active": len(active),
+            "subtotal": subtotal, "discount": discount, "fee": fee, "total": total,
+            "refunded": is_refunded, "code": code,
+        })
+
+    # валовая выручка = все оплаченные заказы, включая потом возвращённые (как в event_metrics)
+    gross = sum(r["subtotal"] for r in order_rows)
+    discounts = sum(r["discount"] for r in order_rows)
+    fees = sum(r["fee"] for r in order_rows)
+    refunds_total = sum(r["total"] for r in order_rows if r["refunded"])
     net = gross - discounts - refunds_total
+    live_orders = [r for r in order_rows if not r["refunded"]]
 
     # продажи по дням
     per_day = {}
-    for t in sold_in_range:
-        day = sale_day(t)
-        if day is None:
+    for r in live_orders:
+        if r["day"] is None:
             continue
-        s, d, _, _ = money(t)
-        if day not in per_day:
-            per_day[day] = {"tickets": 0, "revenue_kzt": 0}
-        per_day[day]["tickets"] += 1
-        per_day[day]["revenue_kzt"] += s - d
+        if r["day"] not in per_day:
+            per_day[r["day"]] = {"tickets": 0, "revenue_kzt": 0}
+        per_day[r["day"]]["tickets"] += r["active"]
+        per_day[r["day"]]["revenue_kzt"] += r["subtotal"] - r["discount"]
 
     sales_over_time = []
     total_so_far = 0
@@ -167,7 +191,7 @@ def compute_event_analytics(event, ticket_types, tickets, orders,
     for tt in types:
         tid = str(tt["id"])
         type_valid = [t for t in valid if str(t.get("ticket_type_id")) == tid]
-        revenue = sum(money(t)[0] - money(t)[1] for t in type_valid if in_range(t))
+        revenue = sum(r["subtotal"] - r["discount"] for r in live_orders if r["type_id"] == tid)
         cap = tt.get("quantity")
         by_type.append({
             "ticket_type_id": tid,
@@ -182,21 +206,19 @@ def compute_event_analytics(event, ticket_types, tickets, orders,
             "is_hidden": bool(tt.get("is_hidden")),
         })
 
-    # промокоды (берём из orders.promo_code)
+    # промокоды: одно погашение = один заказ с кодом
     promo = {}
-    for t in sold_in_range:
-        code = get_order(t).get("promo_code")
-        if not code:
+    for r in live_orders:
+        if not r["code"]:
             continue
-        s, d, _, _ = money(t)
-        if code not in promo:
-            promo[code] = {"code": code, "redemptions": 0, "tickets": 0,
-                           "gross_kzt": 0, "discount_kzt": 0, "net_kzt": 0}
-        promo[code]["redemptions"] += 1
-        promo[code]["tickets"] += 1
-        promo[code]["gross_kzt"] += s
-        promo[code]["discount_kzt"] += d
-        promo[code]["net_kzt"] += s - d
+        if r["code"] not in promo:
+            promo[r["code"]] = {"code": r["code"], "redemptions": 0, "tickets": 0,
+                                "gross_kzt": 0, "discount_kzt": 0, "net_kzt": 0}
+        promo[r["code"]]["redemptions"] += 1
+        promo[r["code"]]["tickets"] += r["active"]
+        promo[r["code"]]["gross_kzt"] += r["subtotal"]
+        promo[r["code"]]["discount_kzt"] += r["discount"]
+        promo[r["code"]]["net_kzt"] += r["subtotal"] - r["discount"]
     campaigns = sorted(promo.values(), key=lambda c: c["tickets"], reverse=True)
 
     return {
@@ -229,7 +251,7 @@ def compute_event_analytics(event, ticket_types, tickets, orders,
             "fees_kzt": fees,
             "refunds_kzt": refunds_total,
             "net_kzt": net,
-            "orders": len({str(t.get("order_id")) for t in sold_in_range}),
+            "orders": len(live_orders),
         },
         "attendance": {
             "registered": sold,

@@ -118,3 +118,56 @@ def test_summary_totals():
     assert s["by_phase"]["upcoming"] == 2
     assert s["promo_redemptions"] == 4
     assert s["percent_checked_in"] == 25.0
+
+
+# ---- заказы через холд (finalize_order): суммы в *_kzt, промокод в promo_code_id ----
+
+HOLD_EVENT = dict(EVENT, id="ev2")
+HOLD_TYPES = [{"id": "std", "event_id": "ev2", "name": "Standard", "price": 5000, "quantity": 100}]
+HOLD_ORDERS = {
+    # один заказ на 3 билета с промокодом -20%
+    "h1": {"id": "h1", "event_id": "ev2", "ticket_type_id": "std", "quantity": 3, "status": "paid",
+           "subtotal_kzt": 15000, "discount_kzt": 3000, "fee_kzt": 600, "total_amount": 12600,
+           "promo_code_id": "pc1", "created_at": "2026-11-02T10:00:00+00:00"},
+    # бесплатная регистрация
+    "h2": {"id": "h2", "event_id": "ev2", "ticket_type_id": "std", "quantity": 1, "status": "completed",
+           "subtotal_kzt": 0, "discount_kzt": 0, "fee_kzt": 0, "total_amount": 0,
+           "created_at": "2026-11-02T11:00:00+00:00"},
+    # заказ на 2 билета, потом полностью возвращён
+    "h3": {"id": "h3", "event_id": "ev2", "ticket_type_id": "std", "quantity": 2, "status": "refunded",
+           "subtotal_kzt": 10000, "discount_kzt": 0, "fee_kzt": 500, "total_amount": 10500,
+           "created_at": "2026-11-03T10:00:00+00:00"},
+}
+HOLD_TICKETS = (
+    [{"id": f"a{i}", "order_id": "h1", "ticket_type_id": "std", "status": "valid"} for i in range(3)]
+    + [{"id": "b0", "order_id": "h2", "ticket_type_id": "std", "status": "valid"}]
+    + [{"id": f"c{i}", "order_id": "h3", "ticket_type_id": "std", "status": "refunded"} for i in range(2)]
+)
+
+
+def run_hold(**kw):
+    return compute_event_analytics(HOLD_EVENT, HOLD_TYPES, HOLD_TICKETS, HOLD_ORDERS, now=NOW,
+                                   promo_codes={"pc1": "FALL20"}, **kw)
+
+
+def test_hold_orders_counted_once_not_per_ticket():
+    r = run_hold()["revenue"]
+    assert r["gross_kzt"] == 15000 + 0 + 10000  # не 3 × 15000
+    assert r["discounts_kzt"] == 3000
+    assert r["fees_kzt"] == 600 + 500
+    assert r["refunds_kzt"] == 10500
+    assert r["net_kzt"] == 25000 - 3000 - 10500
+    assert r["orders"] == 2  # возвращённый заказ не считается
+
+
+def test_hold_promo_code_found_by_id():
+    (c,) = run_hold()["campaigns"]
+    assert c == {"code": "FALL20", "redemptions": 1, "tickets": 3,
+                 "gross_kzt": 15000, "discount_kzt": 3000, "net_kzt": 12000}
+
+
+def test_hold_sales_over_time_counts_tickets_of_live_orders():
+    series = run_hold()["sales_over_time"]
+    assert series == [{"date": "2026-11-02", "tickets": 4, "revenue_kzt": 12000, "cumulative_tickets": 4}]
+    assert run_hold()["capacity"]["sold"] == 4
+    assert run_hold()["by_ticket_type"][0]["revenue_kzt"] == 12000
