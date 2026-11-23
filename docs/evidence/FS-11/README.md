@@ -48,3 +48,6 @@ persistence, `CheckoutModal`, `SupportDialog` and the auth/order/ticket/support 
 - `EventDetailsPage` and `EventPurchase` still issue two requests for one event (correct, not minimal).
 - Date helpers elsewhere default to UTC+5; not changed here.
 - No real-backend, deployed-schema or CORS verification was performed.
+
+## Follow-up: venue map purchase action (after the venue-map merge)
+The seat map added later has its own "Book ticket" button that opened checkout without checking the event status, so cancelled and draft events showed a purchase action. The map now shows and handles that button only for published events. Checked in a browser with a stubbed API: before the change cancelled and draft showed the button, after it only published does. The server already refuses such purchases; this removes the misleading control.
