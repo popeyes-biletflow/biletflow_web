@@ -777,7 +777,8 @@
       "maxUses": "Maximum redemptions must be at least 1.",
       "ends": "Choose when the campaign expires.",
       "window": "The expiry must be after the start."
-    }
+    },
+    "linkUnavailable": "The tracking link cannot be read back after a reload yet. Copy it right after creating the campaign."
   },
   "history": {
     "action": "Action",

@@ -134,9 +134,22 @@ async def set_campaign_disabled(campaign_id: str, body: DisableIn,
         "p_disabled": body.disabled,
     })
 
+def assert_event_open_for_ticket(db, ticket_type_id: str) -> None:
+    try:
+        tier = db.table("ticket_types").select("event_id").eq("id", ticket_type_id).execute().data
+        if not tier:
+            return
+        ev = db.table("events").select("is_suspended, paid_sales_status").eq("id", tier[0]["event_id"]).execute().data
+    except Exception:
+        return
+    if ev and (ev[0].get("is_suspended") is True or ev[0].get("paid_sales_status") == "SUSPENDED"):
+        raise HTTPException(400, "EVENT_SUSPENDED")
+
+
 @router.post("/api/checkout/apply-promo")
 async def apply_promo(body: ApplyPromoIn, user: CurrentUser = Depends(get_current_user)):
     db = db_for_user(user.access_token)
+    assert_event_open_for_ticket(db, body.ticket_type_id)
     return call_rpc(db, "create_ticket_hold", {
         "p_ticket_type_id": body.ticket_type_id,
         "p_quantity": body.quantity,
