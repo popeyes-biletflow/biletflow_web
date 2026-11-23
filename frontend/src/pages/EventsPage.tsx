@@ -3,6 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { getEvents, formatKZT, type EventItem } from '../services/events';
 import { formatEventDate, categoryKey } from '../i18n';
+import { EventCarousel } from '../components/EventCarousel';
 
 export function EventsPage() {
   const { t } = useTranslation();
@@ -44,6 +45,10 @@ export function EventsPage() {
 
   return (
     <main className="mx-auto max-w-6xl p-6">
+      {!loading && !error && events.length > 0 && (
+        <EventCarousel events={events} />
+      )}
+
       <h2 className="mb-4 text-3xl font-bold">{t('discovery.title')}</h2>
 
       <label htmlFor="event-search" className="sr-only">{t('discovery.searchLabel')}</label>

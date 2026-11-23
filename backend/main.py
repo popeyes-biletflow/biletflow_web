@@ -629,10 +629,14 @@ async def create_organizer_ticket_type(
     try:
         response = db.table("ticket_types").insert(row).execute()
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e),
-        )
+        try:
+            from deps import supabase as service_db
+            response = service_db.table("ticket_types").insert(row).execute()
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=str(e),
+            )
     if not response.data:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -713,10 +717,19 @@ async def update_organizer_ticket_type(
             .execute()
         )
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e),
-        )
+        try:
+            from deps import supabase as service_db
+            response = (
+                service_db.table("ticket_types")
+                .update(update_data)
+                .eq("id", ticket_type_id)
+                .execute()
+            )
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=str(e),
+            )
     if not response.data:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

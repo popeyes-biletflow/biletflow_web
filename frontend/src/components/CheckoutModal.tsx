@@ -9,6 +9,7 @@ interface Props {
   isOpen: boolean;
   onClose: () => void;
   event: EventItem;
+  initialTierId?: string;
 }
 
 // почему тип билета сейчас нельзя купить (null = можно)
