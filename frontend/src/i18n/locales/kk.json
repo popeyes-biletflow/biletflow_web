@@ -107,7 +107,22 @@
     "seat": "{{seat}}-орын",
     "total": "Барлығы",
     "bookSeats": "Билет сатып алу",
-    "selected": "Таңдалды"
+    "selected": "Таңдалды",
+    "stage": "САХНА",
+    "screen": "САХНА / ЭКРАН",
+    "aisle": "ӨТКЕЛ",
+    "tableSector": "Сектор / Тариф",
+    "tablePrice": "Бағасы",
+    "tableRows": "Қатарлар",
+    "tableStatus": "Мәртебесі",
+    "rowsVip": "1–2 қатарлар (VIP)",
+    "rowsMid": "3–5 қатарлар",
+    "rowsBack": "6–8 қатарлар",
+    "occupied": "Бос емес",
+    "clickToSelect": "Таңдау үшін басыңыз",
+    "hint": "Зал сызбасынан бос орынды таңдаңыз.",
+    "loginToBook": "Билет сатып алу үшін кіріңіз",
+    "clear": "Тазарту"
   },
   "dates": {
     "months": [

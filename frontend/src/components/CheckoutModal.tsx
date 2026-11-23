@@ -10,6 +10,7 @@ interface CheckoutModalProps {
   isOpen: boolean;
   onClose: () => void;
   event: EventItem;
+  initialTierId?: string;
 }
 
 type Unavailable = 'soldOut' | 'paidInactive' | 'notStarted' | 'ended' | null;
@@ -33,13 +34,13 @@ interface Confirmation {
  * All amounts come from the server (`/checkout/quote`); the client never sends prices.
  * Payment is a clearly-labelled simulation — no real money moves.
  */
-export const CheckoutModal: React.FC<CheckoutModalProps> = ({ isOpen, onClose, event: initialEvent }) => {
+export const CheckoutModal: React.FC<CheckoutModalProps> = ({ isOpen, onClose, event: initialEvent, initialTierId }) => {
   const { user, token } = useAuth();
   const { t } = useTranslation();
   const [event, setEvent] = useState(initialEvent);
   const tiers = event.ticketTiers;
   const firstAvailable = (ev: EventItem) => ev.ticketTiers.find((x) => !tierUnavailable(x, ev))?.id ?? '';
-  const [tierId, setTierId] = useState<string>(firstAvailable(initialEvent));
+  const [tierId, setTierId] = useState<string>(initialTierId || firstAvailable(initialEvent));
   const [promoInput, setPromoInput] = useState(readCampaignPromo());
   const [appliedPromo, setAppliedPromo] = useState('');
   const [quote, setQuote] = useState<Quote | null>(null);
@@ -52,19 +53,23 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({ isOpen, onClose, e
   // Fresh event state on open, so a just-activated paid tier is purchasable without a page reload.
   useEffect(() => {
     if (!isOpen) return;
+    if (initialTierId) {
+      setTierId(initialTierId);
+    }
     let cancelled = false;
     getEvent(initialEvent.id, token)
       .then((ev) => {
         if (cancelled) return;
         setEvent(ev);
         setTierId((current) => {
-          const tier = ev.ticketTiers.find((x) => x.id === current);
-          return tier && !tierUnavailable(tier, ev) ? current : firstAvailable(ev);
+          const target = initialTierId || current;
+          const tier = ev.ticketTiers.find((x) => x.id === target);
+          return tier && !tierUnavailable(tier, ev) ? target : firstAvailable(ev);
         });
       })
       .catch(() => { /* keep the event we already have */ });
     return () => { cancelled = true; };
-  }, [isOpen, initialEvent.id, token]);
+  }, [isOpen, initialEvent.id, token, initialTierId]);
 
   const friendlyError = (e: unknown) => {
     if (e instanceof HttpError) {

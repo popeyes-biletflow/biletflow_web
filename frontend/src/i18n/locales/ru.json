@@ -109,7 +109,22 @@
     "seat": "Место {{seat}}",
     "total": "Итого",
     "bookSeats": "Купить билет",
-    "selected": "Выбрано"
+    "selected": "Выбрано",
+    "stage": "СЦЕНА",
+    "screen": "СЦЕНА / ЭКРАН",
+    "aisle": "ПРОХОД",
+    "tableSector": "Сектор / Тариф",
+    "tablePrice": "Цена",
+    "tableRows": "Ряды",
+    "tableStatus": "Статус",
+    "rowsVip": "Ряды 1–2 (VIP)",
+    "rowsMid": "Ряды 3–5",
+    "rowsBack": "Ряды 6–8",
+    "occupied": "Занято",
+    "clickToSelect": "Нажмите для выбора",
+    "hint": "Выберите свободное место на схеме зала.",
+    "loginToBook": "Войдите, чтобы купить билет",
+    "clear": "Очистить"
   },
   "dates": {
     "months": [

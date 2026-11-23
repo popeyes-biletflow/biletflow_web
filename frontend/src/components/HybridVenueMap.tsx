@@ -1,7 +1,10 @@
 import React, { useId, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { useAuth } from '../context/AuthContext';
 import { currentLang } from '../i18n';
 import { formatKZT, type EventItem, type TicketTier } from '../services/events';
+import { CheckoutModal } from './CheckoutModal';
 
 interface HybridVenueMapProps {
   event?: EventItem;
@@ -27,11 +30,11 @@ interface SeatItem {
 }
 
 const TIER_THEME_COLORS = [
-  { fill: '#3b82f6', border: '#2563eb', label: 'VIP' },       // vibrant blue
-  { fill: '#8b5cf6', border: '#7c3aed', label: 'Premium' },   // violet
-  { fill: '#059669', border: '#047857', label: 'Standard' },  // emerald
-  { fill: '#d97706', border: '#b45309', label: 'Economy' },   // amber
-  { fill: '#db2777', border: '#be185d', label: 'Balcony' },   // pink
+  { fill: '#3b82f6', border: '#2563eb' }, // vibrant blue
+  { fill: '#8b5cf6', border: '#7c3aed' }, // violet
+  { fill: '#059669', border: '#047857' }, // emerald
+  { fill: '#d97706', border: '#b45309' }, // amber
+  { fill: '#db2777', border: '#be185d' }, // pink
 ];
 
 export const HybridVenueMap: React.FC<HybridVenueMapProps> = ({
@@ -42,6 +45,8 @@ export const HybridVenueMap: React.FC<HybridVenueMapProps> = ({
   onSelectTier,
 }) => {
   const { t } = useTranslation();
+  const { user } = useAuth();
+  const navigate = useNavigate();
   const baseId = useId();
 
   const tiers = useMemo(() => {
@@ -55,6 +60,8 @@ export const HybridVenueMap: React.FC<HybridVenueMapProps> = ({
   const [selectedSeatIds, setSelectedSeatIds] = useState<string[]>([]);
   const [hoveredSeat, setHoveredSeat] = useState<SeatItem | null>(null);
   const [zoomLevel, setZoomLevel] = useState<number>(1);
+  const [checkoutOpen, setCheckoutOpen] = useState(false);
+  const [checkoutTierId, setCheckoutTierId] = useState<string>('');
 
   // Sort tiers by price descending (highest price in front)
   const orderedTiers = useMemo(() => {
@@ -71,7 +78,6 @@ export const HybridVenueMap: React.FC<HybridVenueMapProps> = ({
   }, [orderedTiers]);
 
   // Generate clean, minimalist grid of seats (Ticketon / Kino.kz style)
-  // 8 rows total, divided into Left Block (4 seats), Center Block (10 seats), Right Block (4 seats)
   const { seats, rowCount } = useMemo(() => {
     if (!orderedTiers.length) return { seats: [], rowCount: 0 };
 
@@ -89,7 +95,6 @@ export const HybridVenueMap: React.FC<HybridVenueMapProps> = ({
         if (rowNum <= 5) return orderedTiers[1];
         return orderedTiers[2];
       }
-      // 4+ tiers
       const tierIdx = Math.min(Math.floor(((rowNum - 1) / totalRows) * orderedTiers.length), orderedTiers.length - 1);
       return orderedTiers[tierIdx];
     };
@@ -99,13 +104,6 @@ export const HybridVenueMap: React.FC<HybridVenueMapProps> = ({
     const seatGap = 6;
     const aisleGap = 20;
     const startY = 85;
-
-    // Coordinate calculation:
-    // Left block: 4 seats -> 4 * 19 + 3 * 6 = 76 + 18 = 94px
-    // Center block: 10 seats -> 10 * 19 + 9 * 6 = 190 + 54 = 244px
-    // Right block: 4 seats -> 4 * 19 + 3 * 6 = 94px
-    // Total width = 94 + 20 + 244 + 20 + 94 = 472px
-    // Center in 560px SVG canvas: left margin = (560 - 472) / 2 = 44px
     const leftMargin = 44;
 
     for (let r = 1; r <= totalRows; r++) {
@@ -115,7 +113,6 @@ export const HybridVenueMap: React.FC<HybridVenueMapProps> = ({
       // Left block: seats 1..4
       for (let s = 1; s <= 4; s++) {
         const x = leftMargin + (s - 1) * (seatWidth + seatGap);
-        // Deterministic pseudo-occupancy to look like live kino.kz / ticketon
         const isOccupied = tier.remaining !== null && tier.remaining === 0 ? true : (r * 7 + s * 3) % 5 === 0;
         generated.push({
           id: `seat-${r}-${s}`,
@@ -194,6 +191,28 @@ export const HybridVenueMap: React.FC<HybridVenueMapProps> = ({
         return next;
       }
     });
+  };
+
+  // Functional Book Ticket action
+  const handleBookTicket = () => {
+    if (!selectedSeats.length && !orderedTiers.length) return;
+
+    const targetTierId = selectedSeats[0]?.tierId || orderedTiers[0]?.id || '';
+    if (onSelectTier) onSelectTier(targetTierId);
+
+    if (!user) {
+      navigate('/login');
+      return;
+    }
+
+    if (event) {
+      setCheckoutTierId(targetTierId);
+      setCheckoutOpen(true);
+    } else {
+      // Fallback: scroll down to purchase button
+      const btn = document.querySelector('button[class*="bg-emerald-600"]');
+      if (btn) btn.scrollIntoView({ behavior: 'smooth' });
+    }
   };
 
   const mapQuery = encodeURIComponent([venueName, venueAddress].filter(Boolean).join(', '));
@@ -278,7 +297,7 @@ export const HybridVenueMap: React.FC<HybridVenueMapProps> = ({
               {/* Occupied legend */}
               <div className="flex items-center gap-1.5">
                 <span className="inline-block h-3.5 w-3.5 rounded-[3px] bg-gray-200 border border-gray-300" />
-                <span className="text-gray-500">{t('hybridMap.soldOut', { defaultValue: 'Occupied' })}</span>
+                <span className="text-gray-500">{t('hybridMap.occupied', { defaultValue: 'Occupied' })}</span>
               </div>
 
               {/* Selected legend */}
@@ -363,7 +382,7 @@ export const HybridVenueMap: React.FC<HybridVenueMapProps> = ({
                     fontWeight="800"
                     letterSpacing="3"
                   >
-                    ★ {t('seating.stage', { defaultValue: 'СЦЕНА / ЭКРАН / STAGE' })} ★
+                    ★ {t('hybridMap.screen', { defaultValue: 'STAGE / SCREEN' })} ★
                   </text>
                 </g>
 
@@ -378,12 +397,12 @@ export const HybridVenueMap: React.FC<HybridVenueMapProps> = ({
                   );
                 })}
 
-                {/* Aisle Labels (Subtle) */}
+                {/* Aisle Labels (Language-specific) */}
                 <text x="148" y="75" textAnchor="middle" fill="#94a3b8" fontSize="8" fontWeight="600" letterSpacing="1">
-                  ПРОХОД
+                  {t('hybridMap.aisle', { defaultValue: 'AISLE' })}
                 </text>
                 <text x="412" y="75" textAnchor="middle" fill="#94a3b8" fontSize="8" fontWeight="600" letterSpacing="1">
-                  ПРОХОД
+                  {t('hybridMap.aisle', { defaultValue: 'AISLE' })}
                 </text>
 
                 {/* MINIMALIST SQUARE SEATS (Kino.kz / Ticketon style) */}
@@ -421,7 +440,7 @@ export const HybridVenueMap: React.FC<HybridVenueMapProps> = ({
                       onMouseLeave={() => setHoveredSeat(null)}
                       tabIndex={seat.isOccupied ? -1 : 0}
                       role="button"
-                      aria-label={`Row ${seat.rowNumber}, Seat ${seat.seatNumber}: ${formatKZT(seat.priceKZT)}`}
+                      aria-label={`${t('hybridMap.row', { row: seat.rowNumber })}, ${t('hybridMap.seat', { seat: seat.seatNumber })}: ${formatKZT(seat.priceKZT)}`}
                       aria-pressed={isSelected}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter' || e.key === ' ') {
@@ -476,15 +495,15 @@ export const HybridVenueMap: React.FC<HybridVenueMapProps> = ({
                       className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-800 border border-emerald-200"
                     >
                       <span>
-                        {t('hybridMap.row', { row: s.rowNumber, defaultValue: `Ряд ${s.rowNumber}` })},{' '}
-                        {t('hybridMap.seat', { seat: s.seatNumber, defaultValue: `Место ${s.seatNumber}` })}
+                        {t('hybridMap.row', { row: s.rowNumber, defaultValue: `Row ${s.rowNumber}` })},{' '}
+                        {t('hybridMap.seat', { seat: s.seatNumber, defaultValue: `Seat ${s.seatNumber}` })}
                       </span>
                       <span className="text-emerald-600 font-normal">({formatKZT(s.priceKZT)})</span>
                       <button
                         type="button"
                         onClick={() => toggleSeatSelection(s)}
                         className="ml-0.5 text-emerald-600 hover:text-emerald-900 font-bold"
-                        title="Remove seat"
+                        title={t('hybridMap.clear', { defaultValue: 'Remove seat' })}
                       >
                         ×
                       </button>
@@ -495,7 +514,7 @@ export const HybridVenueMap: React.FC<HybridVenueMapProps> = ({
                     onClick={() => setSelectedSeatIds([])}
                     className="text-xs text-gray-400 hover:text-gray-600 underline ml-1"
                   >
-                    {t('discovery.clear', { defaultValue: 'Clear' })}
+                    {t('hybridMap.clear', { defaultValue: 'Clear' })}
                   </button>
                 </div>
 
@@ -511,17 +530,11 @@ export const HybridVenueMap: React.FC<HybridVenueMapProps> = ({
 
                   <button
                     type="button"
-                    onClick={() => {
-                      if (onSelectTier && selectedSeats[0]) {
-                        onSelectTier(selectedSeats[0].tierId);
-                      }
-                      // Smooth scroll down to purchase button or checkout trigger
-                      const btn = document.querySelector('button[class*="bg-emerald-600"]');
-                      if (btn) btn.scrollIntoView({ behavior: 'smooth' });
-                    }}
-                    className="rounded-xl bg-emerald-600 px-5 py-2.5 text-xs sm:text-sm font-bold text-white shadow-sm hover:bg-emerald-700 transition"
+                    onClick={handleBookTicket}
+                    className="rounded-xl bg-emerald-600 px-5 py-2.5 text-xs sm:text-sm font-bold text-white shadow-sm hover:bg-emerald-700 transition flex items-center gap-1.5"
                   >
-                    {t('hybridMap.bookSeats', { defaultValue: 'Купить билет' })} →
+                    <span>{user ? t('hybridMap.bookSeats', { defaultValue: 'Book ticket' }) : t('hybridMap.loginToBook', { defaultValue: 'Sign in to buy' })}</span>
+                    <span>→</span>
                   </button>
                 </div>
               </div>
@@ -529,18 +542,18 @@ export const HybridVenueMap: React.FC<HybridVenueMapProps> = ({
               <div className="flex items-center gap-2 text-xs text-gray-700">
                 <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: tierColorMap.get(hoveredSeat.tierId)?.fill || '#3b82f6' }} />
                 <span className="font-bold">{hoveredSeat.tierName}</span> ·{' '}
-                <span>{t('hybridMap.row', { row: hoveredSeat.rowNumber, defaultValue: `Ряд ${hoveredSeat.rowNumber}` })}, {t('hybridMap.seat', { seat: hoveredSeat.seatNumber, defaultValue: `Место ${hoveredSeat.seatNumber}` })}</span> ·{' '}
+                <span>{t('hybridMap.row', { row: hoveredSeat.rowNumber, defaultValue: `Row ${hoveredSeat.rowNumber}` })}, {t('hybridMap.seat', { seat: hoveredSeat.seatNumber, defaultValue: `Seat ${hoveredSeat.seatNumber}` })}</span> ·{' '}
                 <span className="font-semibold text-gray-900">{formatKZT(hoveredSeat.priceKZT)}</span>
                 <span className="text-gray-400 ml-2">
-                  ({hoveredSeat.isOccupied ? t('hybridMap.soldOut', { defaultValue: 'Occupied' }) : t('hybridMap.available', { defaultValue: 'Click to select' })})
+                  ({hoveredSeat.isOccupied ? t('hybridMap.occupied', { defaultValue: 'Occupied' }) : t('hybridMap.clickToSelect', { defaultValue: 'Click to select' })})
                 </span>
               </div>
             ) : (
               <div className="flex items-center gap-2 text-xs text-gray-500">
                 <span>👆</span>
                 <span>
-                  {t('seating.hint', {
-                    defaultValue: 'Выберите свободное место на схеме зала (как на Ticketon / Kino.kz).',
+                  {t('hybridMap.hint', {
+                    defaultValue: 'Click an available seat on the seating plan to select it.',
                   })}
                 </span>
               </div>
@@ -595,17 +608,22 @@ export const HybridVenueMap: React.FC<HybridVenueMapProps> = ({
             <table className="w-full text-left text-xs sm:text-sm">
               <thead>
                 <tr className="border-b border-gray-200 text-gray-500 font-semibold uppercase tracking-wider text-[11px]">
-                  <th className="py-3 px-4">Сектор / Тариф</th>
-                  <th className="py-3 px-4">Бағасы / Цена</th>
-                  <th className="py-3 px-4">Қатарлар / Ряды</th>
-                  <th className="py-3 px-4 text-right">Статус</th>
+                  <th className="py-3 px-4">{t('hybridMap.tableSector', { defaultValue: 'Tier / Sector' })}</th>
+                  <th className="py-3 px-4">{t('hybridMap.tablePrice', { defaultValue: 'Price' })}</th>
+                  <th className="py-3 px-4">{t('hybridMap.tableRows', { defaultValue: 'Rows' })}</th>
+                  <th className="py-3 px-4 text-right">{t('hybridMap.tableStatus', { defaultValue: 'Status' })}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {orderedTiers.map((tier, idx) => {
                   const colors = tierColorMap.get(tier.id) || { fill: '#3b82f6', border: '#2563eb' };
                   const isSold = tier.remaining !== null && tier.remaining === 0;
-                  const rowRange = idx === 0 ? 'Ряды 1–2 (VIP)' : idx === 1 ? 'Ряды 3–5' : 'Ряды 6–8';
+                  const rowRange =
+                    idx === 0
+                      ? t('hybridMap.rowsVip', { defaultValue: 'Rows 1–2 (VIP)' })
+                      : idx === 1
+                      ? t('hybridMap.rowsMid', { defaultValue: 'Rows 3–5' })
+                      : t('hybridMap.rowsBack', { defaultValue: 'Rows 6–8' });
 
                   return (
                     <tr key={tier.id} className="hover:bg-gray-50/70 transition">
@@ -639,6 +657,16 @@ export const HybridVenueMap: React.FC<HybridVenueMapProps> = ({
             </table>
           </div>
         </div>
+      )}
+
+      {/* Embedded CheckoutModal triggered directly from the Seating Plan */}
+      {event && (
+        <CheckoutModal
+          isOpen={checkoutOpen}
+          onClose={() => setCheckoutOpen(false)}
+          event={event}
+          initialTierId={checkoutTierId}
+        />
       )}
     </section>
   );

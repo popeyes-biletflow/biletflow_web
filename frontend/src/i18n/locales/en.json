@@ -107,7 +107,22 @@
     "seat": "Seat {{seat}}",
     "total": "Total",
     "bookSeats": "Book ticket",
-    "selected": "Selected"
+    "selected": "Selected",
+    "stage": "STAGE",
+    "screen": "STAGE / SCREEN",
+    "aisle": "AISLE",
+    "tableSector": "Tier / Sector",
+    "tablePrice": "Price",
+    "tableRows": "Rows",
+    "tableStatus": "Status",
+    "rowsVip": "Rows 1–2 (VIP)",
+    "rowsMid": "Rows 3–5",
+    "rowsBack": "Rows 6–8",
+    "occupied": "Occupied",
+    "clickToSelect": "Click to select",
+    "hint": "Click an available seat on the seating plan to select it.",
+    "loginToBook": "Sign in to buy ticket",
+    "clear": "Clear"
   },
   "dates": {
     "months": [
