@@ -6,11 +6,16 @@ import { Notice, type NoticeState } from '../components/Notice';
 import { EventEditor } from '../components/organizer/EventEditor';
 import { TicketTypeManager } from '../components/organizer/TicketTypeManager';
 import { PaidSalesActivation } from '../components/organizer/PaidSalesActivation';
+import { CampaignManager } from '../components/organizer/CampaignManager';
+import { HistoryPanel } from '../components/organizer/HistoryPanel';
+import { AttendeesPanel } from '../components/organizer/AttendeesPanel';
+import { inputClass } from '../components/organizer/EventEditor';
 import { formatEventDateTime } from '../services/tickets';
-import { organizerApi, type OrganizerEvent, type OrganizerTicketType } from '../services/organizer';
+import { HttpError } from '../services/events';
+import { fromLocalInput, organizerApi, type OrganizerEvent, type OrganizerTicketType } from '../services/organizer';
 
-type Tab = 'details' | 'tickets' | 'paid';
-const TABS: Tab[] = ['details', 'tickets', 'paid'];
+type Tab = 'details' | 'tickets' | 'paid' | 'campaigns' | 'attendees' | 'history';
+const TABS: Tab[] = ['details', 'tickets', 'paid', 'campaigns', 'attendees', 'history'];
 
 const statusBadge: Record<OrganizerEvent['status'], string> = {
   draft: 'bg-gray-100 text-gray-700',
@@ -42,6 +47,7 @@ function EventManagePage() {
     (location.state as { created?: boolean } | null)?.created ? { kind: 'success', text: t('manage.createdNotice') } : null,
   );
   const [busy, setBusy] = useState(false);
+  const [dup, setDup] = useState<{ title: string; startsAt: string } | null>(null);
 
   const load = useCallback(async () => {
     if (!token || !id) return;
@@ -52,6 +58,10 @@ function EventManagePage() {
       setTypes(tt);
       setState(found ? 'ok' : 'missing');
     } catch (e) {
+      if (e instanceof HttpError && (e.status === 403 || e.status === 404)) {
+        setState('missing');
+        return;
+      }
       setLoadError((e as Error).message);
       setState('error');
     }
@@ -78,6 +88,7 @@ function EventManagePage() {
     return (
       <main className="mx-auto max-w-5xl space-y-3 p-6">
         <h1 className="text-2xl font-bold">{t('manage.notFound')}</h1>
+        <p className="text-sm text-gray-600">{t('manage.noAccess')}</p>
         <Link to="/organizer" className="text-blue-600">{t('manage.backToDashboard')}</Link>
       </main>
     );
@@ -124,6 +135,22 @@ function EventManagePage() {
     }
   }
 
+  async function duplicate() {
+    if (!dup) return;
+    setBusy(true);
+    setNotice(null);
+    try {
+      const res = await organizerApi.duplicate(token!, ev.id, {
+        title: dup.title.trim() || undefined,
+        starts_at: fromLocalInput(dup.startsAt),
+      });
+      navigate(`/organizer/events/${res.event_id}`, { state: { created: true } });
+    } catch (e) {
+      setNotice({ kind: 'error', text: t('manage.duplicateFailed', { reason: (e as Error).message }) });
+      setBusy(false);
+    }
+  }
+
   const cancelled = ev.status === 'cancelled';
   const paidActive = ev.paid_sales_status === 'ACTIVE';
   const hasPaid = types.some((tt) => (tt.price ?? 0) > 0);
@@ -159,6 +186,10 @@ function EventManagePage() {
               {t('manage.unpublish')}
             </button>
           )}
+          <button onClick={() => setDup(dup ? null : { title: `${ev.title ?? ''} ${t('manage.copySuffix')}`.trim(), startsAt: '' })} disabled={busy}
+            className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-semibold hover:bg-gray-50 disabled:opacity-50">
+            {t('manage.duplicate')}
+          </button>
           {!cancelled && (
             <button onClick={() => run('cancel')} disabled={busy} className="rounded-lg border border-red-200 px-4 py-2 text-sm font-semibold text-red-600 hover:bg-red-50 disabled:opacity-50">
               {t('manage.cancelEvent')}
@@ -166,6 +197,25 @@ function EventManagePage() {
           )}
         </div>
       </header>
+
+      {dup && (
+        <section className="space-y-3 rounded-xl border border-blue-200 bg-blue-50/40 p-5 text-sm">
+          <h2 className="font-semibold">{t('manage.duplicateTitle')}</h2>
+          <p className="text-xs text-gray-600">{t('manage.duplicateHint')}</p>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label>{t('editor.title')}
+              <input value={dup.title} onChange={(e) => setDup({ ...dup, title: e.target.value })} className={inputClass} />
+            </label>
+            <label>{t('manage.duplicateStart')}
+              <input type="datetime-local" value={dup.startsAt} onChange={(e) => setDup({ ...dup, startsAt: e.target.value })} className={inputClass} />
+            </label>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={duplicate} disabled={busy} className="rounded-lg bg-blue-600 px-4 py-2 font-semibold text-white disabled:opacity-50">{t('manage.duplicateConfirm')}</button>
+            <button onClick={() => setDup(null)} className="rounded-lg bg-gray-200 px-4 py-2 font-semibold">{t('common.cancel')}</button>
+          </div>
+        </section>
+      )}
 
       {/* the "not ready" list goes away once the checklist is complete */}
       <Notice notice={notice?.text === t('manage.cannotPublish') && missingForPublish.length === 0 ? null : notice} onClose={() => setNotice(null)} />
@@ -203,6 +253,9 @@ function EventManagePage() {
         {tab === 'tickets' && (
           <TicketTypeManager token={token} eventId={ev.id} types={types} readOnly={cancelled} paidSalesActive={paidActive} onChange={setTypes} />
         )}
+        {tab === 'attendees' && <AttendeesPanel token={token} eventId={ev.id} title={ev.title ?? ''} timezone={ev.timezone ?? 'Asia/Almaty'} />}
+        {tab === 'history' && <HistoryPanel token={token} eventId={ev.id} timezone={ev.timezone ?? 'Asia/Almaty'} />}
+        {tab === 'campaigns' && <CampaignManager token={token} event={ev} types={types} />}
         {tab === 'paid' && (
           <PaidSalesActivation token={token} event={ev} types={types}
             onActivated={() => setEvent({ ...ev, paid_sales_status: 'ACTIVE' })}

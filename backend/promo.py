@@ -1,7 +1,7 @@
 import os
 import secrets
 from datetime import datetime, timezone
-
+from typing import Literal
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -37,6 +37,13 @@ RPC_ERRORS = {
     "BAD_TICKETS": 400,
     "PROMO_INACTIVE": 400,
     "PROMO_EXHAUSTED": 400,
+    "PROMO_DISABLED": 400,
+    "PROMO_NOT_STARTED": 400,
+    "PROMO_EXPIRED": 400,
+    "PROMO_WRONG_TIER": 400,
+    "BAD_DISCOUNT": 400,
+    "INVALID_TICKET_TYPE": 400,
+    "CAMPAIGN_NOT_FOUND": 404,
 }
 
 
@@ -66,19 +73,27 @@ def to_utc(dt: datetime) -> datetime:
 class CampaignIn(BaseModel):
     event_id: str
     name: str = Field(min_length=1, max_length=100)
-    discount_percent: int = Field(ge=1, le=100)
+    discount_type: Literal["percent", "fixed_kzt"] = "percent"
+    discount_value: int | None = Field(default=None, ge=1)
+    discount_percent: int | None = Field(default=None, ge=1, le=100)
+    ticket_type_id: str | None = None
     code: str = Field(min_length=3, max_length=32, pattern=r"^[A-Za-z0-9_-]+$")
     max_uses: int = Field(ge=1)
     starts_at: datetime | None = None
     ends_at: datetime
 
     @model_validator(mode="after")
-    def check_dates(self):
+    def check_fields(self):
+        if self.discount_value is None:
+            self.discount_value = self.discount_percent
+        if self.discount_value is None:
+            raise ValueError("discount_value is required")
+        if self.discount_type == "percent" and self.discount_value > 100:
+            raise ValueError("percent discount must be between 1 and 100")
         start = to_utc(self.starts_at) if self.starts_at else datetime.now(timezone.utc)
         if to_utc(self.ends_at) <= start:
             raise ValueError("ends_at must be later than starts_at")
         return self
-
 
 class ApplyPromoIn(BaseModel):
     ticket_type_id: str
@@ -90,18 +105,34 @@ async def create_campaign(body: CampaignIn, user: CurrentUser = Depends(get_curr
     require_organizer(user)
     db = db_for_user(user.access_token)
     slug = secrets.token_urlsafe(6)
-    data = call_rpc(db, "create_campaign", {
+    data = call_rpc(db, "create_campaign_v2", {
         "p_event_id": body.event_id,
         "p_name": body.name,
-        "p_discount_percent": body.discount_percent,
+        "p_discount_type": body.discount_type,
+        "p_discount_value": body.discount_value,
         "p_code": body.code,
         "p_max_uses": body.max_uses,
         "p_ends_at": to_utc(body.ends_at).isoformat(),
         "p_slug": slug,
         "p_starts_at": to_utc(body.starts_at).isoformat() if body.starts_at else None,
+        "p_ticket_type_id": body.ticket_type_id,
     })
     return {**data, "qr_link": f"{PUBLIC_API_URL}/c/{slug}"}
 
+
+class DisableIn(BaseModel):
+    disabled: bool = True
+
+
+@router.patch("/api/campaigns/{campaign_id}/disabled")
+async def set_campaign_disabled(campaign_id: str, body: DisableIn,
+                                user: CurrentUser = Depends(get_current_user)):
+    require_organizer(user)
+    db = db_for_user(user.access_token)
+    return call_rpc(db, "set_campaign_disabled", {
+        "p_campaign_id": campaign_id,
+        "p_disabled": body.disabled,
+    })
 
 @router.post("/api/checkout/apply-promo")
 async def apply_promo(body: ApplyPromoIn, user: CurrentUser = Depends(get_current_user)):
@@ -118,6 +149,9 @@ def campaign_link(slug: str):
     data = call_rpc(supabase, "register_campaign_scan", {"p_slug": slug})
     if not data:
         raise HTTPException(404, "Link not found or campaign inactive")
+    # FS-17: открываем страницу нужного события, код применится в оформлении после проверки сервером
+    if data.get("event_id"):
+        return RedirectResponse(f"{FRONTEND_URL}/events/{data['event_id']}?promo={data['code']}", status_code=302)
     return RedirectResponse(f"{FRONTEND_URL}/checkout?promo={data['code']}", status_code=302)
 
 def lookup_promo(code: str) -> dict:

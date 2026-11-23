@@ -48,6 +48,15 @@ def load_data(db, event_ids):
     return types, tickets, orders
 
 
+def load_promo_codes(db, orders):
+    """{promo_code_id: code} для заказов, оформленных через холд."""
+    ids = list({str(o["promo_code_id"]) for o in orders.values() if o.get("promo_code_id")})
+    if not ids:
+        return {}
+    rows = db.table("promo_codes").select("id, code").in_("id", ids).execute().data or []
+    return {str(r["id"]): r["code"] for r in rows}
+
+
 @router.get("/dashboard")
 async def organizer_dashboard(current_user: CurrentUser = Depends(get_current_user)):
     check_organizer(current_user)
@@ -55,6 +64,7 @@ async def organizer_dashboard(current_user: CurrentUser = Depends(get_current_us
     try:
         events = db.table("events").select("*").eq("organizer_id", current_user.id).execute().data or []
         types, tickets, orders = load_data(db, [str(e["id"]) for e in events])
+        codes = load_promo_codes(db, orders)
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
@@ -63,7 +73,7 @@ async def organizer_dashboard(current_user: CurrentUser = Depends(get_current_us
         eid = str(ev["id"])
         ev_types = [t for t in types if str(t["event_id"]) == eid]
         ev_tickets = [t for t in tickets if str(t["event_id"]) == eid]
-        rows.append(compute_event_analytics(ev, ev_types, ev_tickets, orders))
+        rows.append(compute_event_analytics(ev, ev_types, ev_tickets, orders, promo_codes=codes))
 
     rows.sort(key=lambda r: str(r["event"]["starts_at"] or ""), reverse=True)
 
@@ -101,6 +111,7 @@ async def event_analytics(
 
     try:
         types, tickets, orders = load_data(db, [event_id])
+        codes = load_promo_codes(db, orders)
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
@@ -109,5 +120,5 @@ async def event_analytics(
 
     return compute_event_analytics(
         event, types, tickets, orders,
-        date_from=date_from, date_to=date_to, ticket_type_id=ticket_type_id,
+        date_from=date_from, date_to=date_to, ticket_type_id=ticket_type_id, promo_codes=codes,
     )

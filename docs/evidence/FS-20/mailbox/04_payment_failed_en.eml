@@ -1,0 +1,33 @@
+From: BiletFlow <no-reply@biletflow.local>
+To: buyer@example.com
+Subject: Payment failed: Demo Fest
+MIME-Version: 1.0
+Content-Type: multipart/alternative;
+ boundary="===============4860461939081075259=="
+
+--===============4860461939081075259==
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+
+The bank declined the payment for =E2=80=9CDemo Fest=E2=80=9D (demo). Your ti=
+ckets stay reserved until 14:09 =E2=80=94 try again: http://localhost:5173/ev=
+ents/33333333-3333-3333-3333-333333333333
+
+--===============4860461939081075259==
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+MIME-Version: 1.0
+
+<!doctype html><html><body style=3D"font-family:Arial,sans-serif;font-size:15=
+px;color:#111;max-width:560px"><p style=3D"font-size:20px;font-weight:bold;ma=
+rgin:0 0 16px">BiletFlow</p><p>The bank declined the payment for =E2=80=9CDem=
+o Fest=E2=80=9D (demo). Your tickets stay reserved until 14:09 =E2=80=94 try =
+again: <a href=3D"http://localhost:5173/events/33333333-3333-3333-3333-333333=
+333333" style=3D"color:#1d4ed8">http://localhost:5173/events/33333333-3333-33=
+33-3333-333333333333</a></p><p style=3D"color:#666;font-size:12px;margin-top:=
+24px">BiletFlow =C2=B7 demo / =D1=83=D1=87=D0=B5=D0=B1=D0=BD=D1=8B=D0=B9 =D0=
+=BF=D1=80=D0=BE=D0=B5=D0=BA=D1=82. =D0=9F=D0=BB=D0=B0=D1=82=D0=B5=D0=B6=D0=B8=
+ =D1=81=D0=B8=D0=BC=D1=83=D0=BB=D0=B8=D1=80=D0=BE=D0=B2=D0=B0=D0=BD=D1=8B.</p=
+></body></html>
+
+--===============4860461939081075259==--

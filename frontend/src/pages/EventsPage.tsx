@@ -10,6 +10,7 @@ export function EventsPage() {
   const [events, setEvents] = useState<EventItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   const [params, setParams] = useSearchParams();
   const q = params.get('q') ?? '';
   const category = params.get('category') ?? 'all';
@@ -21,8 +22,15 @@ export function EventsPage() {
   };
 
   useEffect(() => {
-    getEvents().then(setEvents).catch(() => setError(true)).finally(() => setLoading(false));
-  }, []);
+    let live = true;
+    getEvents()
+      .then((rows) => { if (live) { setEvents(rows); setError(false); } })
+      .catch(() => { if (live) setError(true); })
+      .finally(() => { if (live) setLoading(false); });
+    return () => { live = false; };
+  }, [attempt]);
+
+  const retry = () => { setError(false); setLoading(true); setAttempt((a) => a + 1); };
 
   const catLabel = useCallback((raw: string) => t(`categories.${categoryKey(raw)}`, { defaultValue: raw }), [t]);
   const categories = useMemo(() => [...new Set(events.map((e) => e.category))].sort(), [events]);
@@ -32,7 +40,7 @@ export function EventsPage() {
     return events
       .filter((e) => category === 'all' || e.category === category)
       .filter((e) => !needle || [e.title, e.description, e.venueName, e.venueAddress, catLabel(e.category)].join(' ').toLowerCase().includes(needle))
-      .sort((a, b) => a.startsAt.localeCompare(b.startsAt));
+      .sort((a, b) => Date.parse(a.startsAt) - Date.parse(b.startsAt));
   }, [events, q, category, catLabel]);
 
   return (
@@ -57,13 +65,18 @@ export function EventsPage() {
       </div>
 
       {!loading && !error && (
-        <p className="mb-4 text-sm text-gray-500">
+        <p className="mb-4 text-sm text-gray-500" role="status">
           {t('discovery.results', { count: visible.length })}
           {(q || category !== 'all') && <button onClick={() => setParams({}, { replace: true })} className="ml-3 text-blue-600 hover:underline">{t('discovery.clear')}</button>}
         </p>
       )}
-      {loading && <p className="text-gray-500">{t('discovery.loading')}</p>}
-      {error && <p className="rounded-lg bg-red-50 p-4 text-red-700">{t('discovery.error')}</p>}
+      {loading && <p className="text-gray-500" role="status" aria-busy="true">{t('discovery.loading')}</p>}
+      {error && (
+        <div role="alert" className="rounded-lg bg-red-50 p-4 text-red-700">
+          <p>{t('discovery.error')}</p>
+          <button onClick={retry} className="mt-2 font-semibold underline">{t('common.retry')}</button>
+        </div>
+      )}
       {!loading && !error && visible.length === 0 && <p className="text-gray-500">{t('discovery.empty')}</p>}
 
       <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">

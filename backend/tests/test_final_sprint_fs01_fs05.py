@@ -196,18 +196,21 @@ def execute_request(db: InMemoryDB, user: CurrentUser | None, method: str, url: 
 # ===========================================================================
 
 def test_fs01_auth_reset_and_verification_endpoints():
-    """Verification and reset links complete with a demo mailbox."""
+    """Reset and verification go through Supabase Auth (FS-16 replaced the demo links)."""
+    from unittest.mock import AsyncMock
     db = InMemoryDB(profiles=[])
-    # Request reset
-    res = execute_request(db, None, "post", "/api/auth/reset-password", json={"email": "user@example.com"})
-    assert res.status_code == 200
-    assert "reset_link" in res.json()
-    assert "demo" in res.json()["reset_link"]
+    fake = AsyncMock(side_effect=[
+        (200, {}),  # POST /recover
+        (200, {"id": "u1", "email_confirmed_at": "2026-11-20T10:00:00Z"}),  # GET /user
+    ])
+    with patch.object(main_module, "gotrue", fake):
+        res = execute_request(db, None, "post", "/api/auth/reset-password", json={"email": "user@example.com"})
+        assert res.status_code == 200
+        assert res.json()["reset_link"] is None
 
-    # Verify link
-    v_res = execute_request(db, None, "get", "/api/auth/verify?token=demo-token&type=signup")
-    assert v_res.status_code == 200
-    assert v_res.json()["verified"] is True
+        v_res = execute_request(db, None, "get", "/api/auth/verify?token=access-token&type=signup")
+        assert v_res.status_code == 200
+        assert v_res.json()["verified"] is True
 
 
 def test_fs01_missing_or_expired_token_yields_401():

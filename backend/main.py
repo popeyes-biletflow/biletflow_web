@@ -14,10 +14,14 @@ from routers.tickets import router as tickets_router
 from routers.support import router as support_router
 from routers.organizer import router as organizer_router
 from routers.admin import router as admin_router
-from crypto import generate_hmac_signature
+from crypto import generate_hmac_signature, ticket_qr_payload, qr_expiry_for_event
 
 from schemas import (
     UserAuthSchema,
+    SignupSchema,
+    RefreshRequestSchema,
+    ResendVerificationSchema,
+    PasswordResetConfirmSchema,
     SignupResponseSchema,
     AuthResponseSchema,
     PasswordResetRequestSchema,
@@ -51,15 +55,25 @@ from promo import lookup_promo, redeem_promo, release_promo
 from orders import FEE_PERCENT
 from routers.analytics import router as analytics_router
 from routers.event_history import router as event_history_router
+from routers.organizer_finance import router as organizer_finance_router
+from routers.refunds import router as refunds_router
 from routers.mobile import router as mobile_router
+from routers.my_orders import router as my_orders_router
+from routers.support_escalation import router as support_escalation_router
+from routers.notify_admin import router as notify_admin_router
 app.include_router(promo_router)
 app.include_router(analytics_router)
 app.include_router(event_history_router)
+app.include_router(organizer_finance_router)
+app.include_router(refunds_router)
 app.include_router(tickets_router)
 app.include_router(support_router)
 app.include_router(organizer_router)
 app.include_router(orders_router)
 app.include_router(mobile_router)
+app.include_router(my_orders_router)
+app.include_router(support_escalation_router)
+app.include_router(notify_admin_router)
 app.include_router(admin_router)
 
 
@@ -76,35 +90,9 @@ def db_for_user(token: str) -> Client:
     return client
 
 
-QR_GRACE_SECONDS = 24 * 3600
-QR_FALLBACK_SECONDS = 365 * 24 * 3600
-
-
-def qr_expiry_for_event(event: Optional[dict]) -> int:
-    """QR codes stay valid until 24h after the event ends (or starts).
-
-    Deriving the expiry from the event (instead of "now + 72h") keeps the
-    payload stable, so the same ticket re-downloaded later yields the same QR,
-    and a ticket bought weeks in advance is still scannable at the door.
-    """
-    import time
-    from datetime import datetime as _dt
-
-    raw = (event or {}).get("ends_at") or (event or {}).get("starts_at")
-    if raw:
-        try:
-            return int(_dt.fromisoformat(str(raw).replace("Z", "+00:00")).timestamp()) + QR_GRACE_SECONDS
-        except ValueError:
-            pass
-    return int(time.time()) + QR_FALLBACK_SECONDS
-
-
 def make_qr_payload(ticket_id: str, event_id: str, user_id: str, event: Optional[dict] = None) -> tuple[str, str]:
-    """Build the signed QR payload ``ticket_id:event_id:user_id:expires_at:signature``."""
-    expires_at = qr_expiry_for_event(event)
-    signature = generate_hmac_signature(ticket_id, event_id, user_id, expires_at)
-    qr_payload = f"{ticket_id}:{event_id}:{user_id}:{expires_at}:{signature}"
-    return qr_payload, signature
+    """Build the signed QR payload (shared helper in crypto.py)."""
+    return ticket_qr_payload(ticket_id, event_id, user_id, event)
 
 
 async def get_current_user(
@@ -251,6 +239,52 @@ def sold_counts_for_event(db: Client, event_id: str) -> dict[str, int]:
         key = str(row.get("ticket_type_id"))
         counts[key] = counts.get(key, 0) + 1
     return counts
+
+
+def tier_breakdown_for_event(db: Client, event_id: str) -> dict[str, dict]:
+    try:
+        rows = (
+            db.table("tickets")
+            .select("ticket_type_id, status")
+            .eq("event_id", event_id)
+            .execute()
+            .data
+            or []
+        )
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+    out: dict[str, dict] = {}
+    for row in rows:
+        entry = out.setdefault(str(row.get("ticket_type_id")), {"refunded": 0, "checked_in": 0, "reserved": 0})
+        state = (row.get("status") or "").lower()
+        if state == "refunded":
+            entry["refunded"] += 1
+        elif state in ("checked_in", "used"):
+            entry["checked_in"] += 1
+    try:
+        holds = (
+            supabase.table("ticket_holds")
+            .select("ticket_type_id, quantity, expires_at")
+            .eq("event_id", event_id)
+            .eq("status", "active")
+            .execute()
+            .data
+            or []
+        )
+    except Exception:
+        return out
+    from datetime import datetime as _dt, timezone as _tz
+
+    now = _dt.now(_tz.utc)
+    for hold in holds:
+        try:
+            if _parse_ts(hold["expires_at"]) <= now:
+                continue
+        except Exception:
+            continue
+        entry = out.setdefault(str(hold.get("ticket_type_id")), {"refunded": 0, "checked_in": 0, "reserved": 0})
+        entry["reserved"] += int(hold.get("quantity") or 0)
+    return out
 
 
 def with_sold_available(row: dict, sold: int) -> dict:
@@ -442,7 +476,18 @@ async def update_organizer_event(
         )
     if not response.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found.")
-    return response.data[0]
+    updated = response.data[0]
+
+    # FS-20: держателям билетов пишем, только если поменялись дата / время / место
+    watched = ("starts_at", "ends_at", "venue_name", "venue_address")
+    if updated.get("status") == "published" and any(str(event.get(k)) != str(updated.get(k)) for k in watched):
+        try:
+            import notify
+            version = "|".join(str(updated.get(k)) for k in watched)
+            notify.notify_event_holders(db, updated, "EVENT_UPDATED", f"updated:{abs(hash(version))}")
+        except Exception:
+            pass
+    return updated
 
 
 @app.post("/api/organizer/events/{event_id}/publish")
@@ -540,8 +585,7 @@ async def cancel_organizer_event(
 ):
     require_organizer(current_user)
     db = db_for_user(current_user.access_token)
-    load_owned_event(db, event_id, current_user)
-    # TODO audit
+    previous = load_owned_event(db, event_id, current_user)
     try:
         response = (
             db.table("events")
@@ -556,7 +600,16 @@ async def cancel_organizer_event(
         )
     if not response.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found.")
-    return response.data[0]
+    cancelled = response.data[0]
+
+    # FS-20: всем держателям билетов — письмо и уведомление об отмене (один раз на событие)
+    if previous.get("status") != "cancelled":
+        try:
+            import notify
+            notify.notify_event_holders(db, cancelled, "EVENT_CANCELLED", "cancelled")
+        except Exception:
+            pass
+    return cancelled
 
 
 @app.post("/api/organizer/events/{event_id}/ticket-types", status_code=status.HTTP_201_CREATED)
@@ -613,8 +666,10 @@ async def list_organizer_ticket_types(
             detail=str(e),
         )
     sold_map = sold_counts_for_event(db, event_id)
+    breakdown = tier_breakdown_for_event(db, event_id)
+    zero = {"refunded": 0, "checked_in": 0, "reserved": 0}
     return [
-        with_sold_available(row, sold_map.get(str(row["id"]), 0))
+        {**with_sold_available(row, sold_map.get(str(row["id"]), 0)), **breakdown.get(str(row["id"]), zero)}
         for row in (response.data or [])
     ]
 
@@ -683,96 +738,81 @@ async def update_organizer_ticket_type(
     return with_sold_available(response.data[0], sold)
 
 
-@app.post(
-    "/api/auth/signup",
-    response_model=SignupResponseSchema,
-    status_code=status.HTTP_201_CREATED
-)
-async def signup(credentials: UserAuthSchema):
-    """Registers a new user using Supabase Auth with verified certificates."""
-    url = f"{SUPABASE_URL}/auth/v1/signup"
-    headers = {
-        "apikey": SUPABASE_KEY,
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "email": credentials.email,
-        "password": credentials.password
-    }
+# ---------------------------------------------------------------------------
+# FS-16: регистрация, вход, подтверждение email, сброс пароля через Supabase Auth
+# ---------------------------------------------------------------------------
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173").rstrip("/")
 
+
+async def gotrue(method, path, body=None, token=None, params=None):
+    """Запрос к Supabase Auth (/auth/v1/...). Возвращает (код ответа, json)."""
+    headers = {"apikey": SUPABASE_KEY, "Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     try:
-        async with httpx.AsyncClient(verify=VERIFY_SSL) as client:
-            response = await client.post(url, json=payload, headers=headers)
+        async with httpx.AsyncClient(verify=VERIFY_SSL, timeout=15) as client:
+            response = await client.request(method, f"{SUPABASE_URL}/auth/v1{path}", json=body, headers=headers, params=params)
     except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Registration service unavailable: {sanitize_error(exc)}",
-        )
+        raise HTTPException(status_code=503, detail=f"Authentication service unavailable: {sanitize_error(exc)}")
+    try:
+        data = response.json()
+    except ValueError:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    return response.status_code, data
 
-    data = response.json()
 
-    if response.status_code != 200 or "error" in data:
-        error_msg = data.get("msg") or data.get("error_description") or "Registration failed."
-        raise HTTPException(
-            status_code=response.status_code if response.status_code != 200 else status.HTTP_400_BAD_REQUEST,
-            detail=error_msg
-        )
+def gotrue_error(data, default):
+    return data.get("msg") or data.get("error_description") or data.get("message") or default
 
-    user_data = data.get("user") or {}
-    user_id = data.get("id") or user_data.get("id")
-    if user_id is not None:
-        user_id = str(user_id)
 
-    verification_link = f"http://localhost:5173/auth/verify?token=demo-{user_id}&type=signup"
+@app.post("/api/auth/signup", response_model=SignupResponseSchema, status_code=status.HTTP_201_CREATED)
+async def signup(credentials: SignupSchema):
+    body = {"email": credentials.email.strip(), "password": credentials.password}
+    if credentials.full_name and credentials.full_name.strip():
+        body["data"] = {"full_name": credentials.full_name.strip()}
+
+    # письмо с подтверждением отправляет сам Supabase, ссылка вернёт на /auth/callback
+    code, data = await gotrue("POST", "/signup", body, params={"redirect_to": f"{FRONTEND_URL}/auth/callback"})
+    if code >= 400 or "error" in data:
+        raise HTTPException(status_code=code if code >= 400 else 400, detail=gotrue_error(data, "Registration failed."))
+
+    user = data.get("user") or data
+    user_id = user.get("id")
+    # если в Supabase выключено подтверждение email, сразу приходит access_token
+    need_confirm = not data.get("access_token") and not user.get("email_confirmed_at")
 
     return SignupResponseSchema(
-        message="User registered successfully. Check email if verification is required.",
-        user_id=user_id,
-        verification_link=verification_link,
+        message="Check your inbox to confirm your email." if need_confirm else "Account created.",
+        user_id=str(user_id) if user_id else None,
+        verification_link=None,
+        email_confirmation_required=need_confirm,
     )
 
 
 @app.post("/api/auth/login", response_model=AuthResponseSchema)
 async def login(credentials: UserAuthSchema):
-    """Authenticates a user and returns JWT tokens."""
-    url = f"{SUPABASE_URL}/auth/v1/token?grant_type=password"
-    headers = {
-        "apikey": SUPABASE_KEY,
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "email": credentials.email,
-        "password": credentials.password
-    }
+    code, data = await gotrue(
+        "POST", "/token",
+        {"email": credentials.email.strip(), "password": credentials.password},
+        params={"grant_type": "password"},
+    )
 
-    try:
-        async with httpx.AsyncClient(verify=VERIFY_SSL) as client:
-            response = await client.post(url, json=payload, headers=headers)
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Authentication service unavailable: {sanitize_error(exc)}",
-        )
-
-    data = response.json()
-
-    if response.status_code != 200 or "access_token" not in data:
-        error_msg = data.get("error_description") or "Invalid email or password."
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=error_msg
-        )
+    # при ошибке токены не отдаём вообще
+    if code != 200 or "access_token" not in data:
+        text = gotrue_error(data, "").lower()
+        if "not confirmed" in text or "email_not_confirmed" in (data.get("error_code"), data.get("code")):
+            raise HTTPException(status_code=403, detail="EMAIL_NOT_CONFIRMED")
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
 
     user_id = str(data["user"]["id"])
 
-    # Check for account suspension
+    # заблокированного пользователя не пускаем
     try:
         prof = supabase.table("profiles").select("is_suspended").eq("id", user_id).execute()
         if prof.data and prof.data[0].get("is_suspended"):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Your account has been suspended by an administrator.",
-            )
+            raise HTTPException(status_code=403, detail="Your account has been suspended by an administrator.")
     except HTTPException:
         raise
     except Exception:
@@ -782,38 +822,77 @@ async def login(credentials: UserAuthSchema):
         access_token=data["access_token"],
         refresh_token=data["refresh_token"],
         user_id=user_id,
-        email=data["user"]["email"]
+        email=data["user"]["email"],
+        expires_in=data.get("expires_in"),
+    )
+
+
+@app.post("/api/auth/refresh", response_model=AuthResponseSchema)
+async def refresh_session(payload: RefreshRequestSchema):
+    # access token живёт час, потом фронт меняет refresh token на новый
+    code, data = await gotrue("POST", "/token", {"refresh_token": payload.refresh_token}, params={"grant_type": "refresh_token"})
+    if code != 200 or "access_token" not in data:
+        raise HTTPException(status_code=401, detail="Session expired. Please sign in again.")
+    return AuthResponseSchema(
+        access_token=data["access_token"],
+        refresh_token=data["refresh_token"],
+        user_id=str(data["user"]["id"]),
+        email=data["user"]["email"],
+        expires_in=data.get("expires_in"),
     )
 
 
 @app.post("/api/auth/logout", response_model=LogoutResponseSchema)
 async def logout(current_user: CurrentUser = Depends(get_current_user)):
-    """Sign out the current user and revoke their session."""
+    # отзываем сессию, чтобы refresh token больше не работал
+    await gotrue("POST", "/logout", token=current_user.access_token)
     return LogoutResponseSchema(message="Successfully signed out.")
+
+
+@app.post("/api/auth/resend-verification", response_model=PasswordResetResponseSchema)
+async def resend_verification(payload: ResendVerificationSchema):
+    await gotrue("POST", "/resend", {"type": "signup", "email": payload.email.strip()},
+                 params={"redirect_to": f"{FRONTEND_URL}/auth/callback"})
+    return PasswordResetResponseSchema(message="If the account exists and is not confirmed yet, a new email was sent.")
 
 
 @app.post("/api/auth/reset-password", response_model=PasswordResetResponseSchema)
 @app.post("/api/auth/recover", response_model=PasswordResetResponseSchema)
 async def request_password_reset(payload: PasswordResetRequestSchema):
-    """Initiate password reset workflow."""
     email = payload.email.strip().lower()
-    reset_link = f"http://localhost:5173/auth/reset-password?email={email}&token=demo-reset-token"
-    return PasswordResetResponseSchema(
-        message="Password reset instructions sent. Please check your mailbox.",
-        reset_link=reset_link,
-    )
+    code, data = await gotrue("POST", "/recover", {"email": email},
+                              params={"redirect_to": f"{FRONTEND_URL}/auth/reset-password"})
+    if code == 429:
+        raise HTTPException(status_code=429, detail=gotrue_error(data, "Too many requests. Try again later."))
+    # одинаковый ответ, есть такой email или нет (чтобы нельзя было проверять чужие адреса)
+    return PasswordResetResponseSchema(message="If an account exists for this email, a reset link was sent.", reset_link=None)
+
+
+@app.post("/api/auth/reset-password/confirm", response_model=PasswordResetResponseSchema)
+async def confirm_password_reset(payload: PasswordResetConfirmSchema):
+    if len(payload.new_password) < 6:
+        raise HTTPException(status_code=422, detail="Password must be at least 6 characters.")
+    # token — это access_token из ссылки восстановления
+    code, data = await gotrue("PUT", "/user", {"password": payload.new_password}, token=payload.token)
+    if code in (401, 403):
+        raise HTTPException(status_code=401, detail="The reset link is invalid or has expired.")
+    if code != 200:
+        raise HTTPException(status_code=400, detail=gotrue_error(data, "Could not update the password."))
+    return PasswordResetResponseSchema(message="Password updated. You can sign in now.")
 
 
 @app.get("/api/auth/verify", response_model=VerifyEmailResponseSchema)
 @app.post("/api/auth/verify", response_model=VerifyEmailResponseSchema)
-async def verify_auth_token(
-    token: Optional[str] = Query(None),
-    type: Optional[str] = Query(None),
-):
-    """Verify signup or password reset confirmation link."""
+async def verify_auth_token(token: Optional[str] = Query(None), type: Optional[str] = Query(None)):
+    if not token:
+        raise HTTPException(status_code=400, detail="Missing verification token.")
+    code, data = await gotrue("GET", "/user", token=token)
+    if code != 200:
+        raise HTTPException(status_code=401, detail="The verification link is invalid or has expired.")
+    confirmed = bool(data.get("email_confirmed_at") or data.get("confirmed_at"))
     return VerifyEmailResponseSchema(
-        message="Verification link successfully processed.",
-        verified=True,
+        message="Email confirmed." if confirmed else "Email is not confirmed yet.",
+        verified=confirmed,
     )
 
 
@@ -1083,93 +1162,17 @@ async def register_for_event(
     )
 
 
-def attendee_ticket_status(ticket: dict, event: dict, refund_case: Optional[dict]) -> str:
-    """Map DB ticket status + event state + open refund request to the dashboard status."""
-    raw = (ticket.get("status") or "").lower()
-    if raw == "refunded":
-        return "REFUNDED"
-    if raw == "cancelled" or event.get("status") == "cancelled":
-        return "CANCELLED"
-    if raw in ("checked_in", "used"):
-        return "USED"
-    if refund_case and refund_case.get("status") != "RESOLVED":
-        return "CANCEL_PENDING"
-    return "ACTIVE"
-
-
 @app.get("/api/me/tickets")
 async def my_tickets(current_user: CurrentUser = Depends(get_current_user)):
-    """All tickets of the signed-in attendee with event, pricing and a signed QR payload."""
+    """All tickets of the signed-in attendee (FS-18: same data as /api/me/orders, flattened)."""
+    from routers.my_orders import flat_tickets, load_orders
+
     db = db_for_user(current_user.access_token)
     try:
-        tickets = db.table("tickets").select("*").eq("user_id", current_user.id).execute().data or []
-        if not tickets:
-            return []
-        event_ids = list({str(t["event_id"]) for t in tickets})
-        type_ids = list({str(t["ticket_type_id"]) for t in tickets if t.get("ticket_type_id")})
-        order_ids = list({str(t["order_id"]) for t in tickets if t.get("order_id")})
-        ticket_ids = [str(t["id"]) for t in tickets]
-        events = {str(e["id"]): e for e in db.table("events").select("*").in_("id", event_ids).execute().data or []}
-        types = (
-            {str(t["id"]): t for t in db.table("ticket_types").select("*").in_("id", type_ids).execute().data or []}
-            if type_ids else {}
-        )
-        orders = (
-            {str(o["id"]): o for o in db.table("orders").select("*").in_("id", order_ids).execute().data or []}
-            if order_ids else {}
-        )
-        cases = (
-            db.table("support_cases")
-            .select("id, ticket_id, status, created_at")
-            .eq("requester_id", current_user.id)
-            .eq("category", "refund")
-            .in_("ticket_id", ticket_ids)
-            .execute()
-            .data
-            or []
-        )
+        orders = load_orders(db, current_user)
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
-
-    latest_case: dict[str, dict] = {}
-    for c in sorted(cases, key=lambda c: str(c.get("created_at") or "")):
-        latest_case[str(c["ticket_id"])] = c
-
-    result = []
-    for t in tickets:
-        tid = str(t["id"])
-        event = events.get(str(t["event_id"]), {})
-        ttype = types.get(str(t.get("ticket_type_id")), {})
-        order = orders.get(str(t.get("order_id")), {})
-        case = latest_case.get(tid)
-        state = attendee_ticket_status(t, event, case)
-        price = int(ttype.get("price") or 0)
-        subtotal = order.get("subtotal_amount")
-        total = order.get("total_amount")
-        usable = state in ("ACTIVE", "CANCEL_PENDING")
-        result.append({
-            "id": tid,
-            "order_id": str(t.get("order_id") or ""),
-            "event_id": str(t["event_id"]),
-            "event_title": event.get("title") or "—",
-            "starts_at": event.get("starts_at"),
-            "ends_at": event.get("ends_at"),
-            "timezone": event.get("timezone") or "Asia/Almaty",
-            "venue_name": event.get("venue_name") or "",
-            "venue_address": event.get("venue_address") or "",
-            "ticket_type": ttype.get("name") or "—",
-            "subtotal_kzt": int(subtotal if subtotal is not None else price),
-            "discount_kzt": int(order.get("discount_amount") or 0),
-            "fee_kzt": int(order.get("fee_amount") or 0),
-            "total_kzt": int(total if total is not None else price),
-            "promo_code": order.get("promo_code"),
-            "purchased_at": order.get("created_at"),
-            "status": state,
-            "refund_case_id": str(case["id"]) if case else None,
-            "checked_in_at": t.get("checked_in_at"),
-            # A QR is only handed out for tickets that can still be used for admission.
-            "qr_payload": make_qr_payload(tid, str(t["event_id"]), current_user.id, event)[0] if usable else None,
-        })
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=sanitize_error(e))
+    result = flat_tickets(orders, current_user)
     result.sort(key=lambda r: str(r.get("starts_at") or ""), reverse=True)
     return result
 

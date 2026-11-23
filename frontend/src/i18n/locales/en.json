@@ -10,7 +10,11 @@
     "notFound": "Page not found",
     "toEvents": "Go to events",
     "organizer": "Organizer",
-    "loginToBuy": "Sign in to get a ticket"
+    "loginToBuy": "Sign in to get a ticket",
+    "noAccess": "No access",
+    "noAccessHint": "This section is not available for the “{{role}}” role.",
+    "support": "Support",
+    "admin": "Admin"
   },
   "discovery": {
     "title": "Discover events",
@@ -56,7 +60,11 @@
     "noTiers": "Ticket prices will be announced soon.",
     "previewBanner": "Preview: this event is {{status}} · {{visibility}}. Only you can see this page in this state.",
     "cancelledBanner": "This event has been cancelled.",
-    "paidNotOnSale": "not on sale yet"
+    "paidNotOnSale": "not on sale yet",
+    "loadError": "Could not load this event. Check your connection and try again.",
+    "salesEnded": "sales ended",
+    "registrationNotOpen": "Registration opens {{date}}.",
+    "registrationClosed": "Registration for this event is closed."
   },
   "map": {
     "title": "Venue map",
@@ -254,7 +262,10 @@
     "tabs": {
       "details": "Details",
       "tickets": "Ticket types",
-      "paid": "Paid sales"
+      "paid": "Paid sales",
+      "campaigns": "Campaigns",
+      "attendees": "Attendees",
+      "history": "History"
     },
     "done": {
       "publish": "Event published.",
@@ -265,7 +276,15 @@
       "publish": "Could not publish: {{reason}}",
       "unpublish": "Could not unpublish: {{reason}}",
       "cancel": "Could not cancel: {{reason}}"
-    }
+    },
+    "noAccess": "This event does not exist or you do not manage it.",
+    "duplicate": "Duplicate",
+    "duplicateTitle": "Duplicate as a new draft",
+    "duplicateHint": "Copies the details and ticket types only. Attendees, orders, payments, support cases and history are not copied; paid sales start inactive.",
+    "duplicateStart": "New start (optional)",
+    "duplicateConfirm": "Create draft copy",
+    "duplicateFailed": "Could not duplicate the event: {{reason}}",
+    "copySuffix": "(copy)"
   },
   "ticketTypes": {
     "empty": "No ticket types yet. Add a free or paid one.",
@@ -307,7 +326,8 @@
       "belowSold": "Quantity cannot be lower than already sold ({{sold}}).",
       "maxPerOrder": "Max per order must be at least 1.",
       "saleWindow": "Sale end must be after sale start."
-    }
+    },
+    "counts": "Available {{available}} · Reserved {{reserved}} · Sold {{sold}} · Refunded {{refunded}} · Checked in {{checkedIn}}"
   },
   "activation": {
     "statusActive": "Paid sales are active",
@@ -353,7 +373,9 @@
     "success": "Paid sales activated. Activation fee {{fee}} recorded (simulated).",
     "alreadyActive": "Paid sales are already active for this event.",
     "failed": "Activation failed. Missing requirements:",
-    "requestFailed": "Activation request failed: {{reason}}"
+    "requestFailed": "Activation request failed: {{reason}}",
+    "demoBadge": "demo",
+    "statusFailed": "Could not load the activation status."
   },
   "organizer": {
     "title": "Organizer dashboard",
@@ -459,7 +481,45 @@
     "freeConfirmed": "You are registered. Total 0 ₸, no payment needed.",
     "paidConfirmed": "Payment received (demo) and your ticket is issued.",
     "noPaymentNeeded": "Free registration: nothing was charged.",
-    "goToOrders": "My orders"
+    "goToOrders": "My orders",
+    "reviewTitle": "Review your order",
+    "quantity": "Quantity",
+    "less": "Fewer",
+    "more": "More",
+    "promoHint": "The server checks the code on the next step.",
+    "campaignPromo": "Campaign QR code: the discount applies after the server checks it.",
+    "campaignBanner": "Campaign promo code {{code}} will be applied at checkout.",
+    "attendees": "Attendee details",
+    "attendeeName": "Name (ticket {{n}})",
+    "attendeeEmail": "Email",
+    "reserve": "Continue",
+    "holdTimer": "Your tickets are reserved for {{time}}",
+    "holdExpired": "The reservation expired and the tickets went back on sale.",
+    "startAgain": "Start again",
+    "discountCode": "Promo code {{code}} (−{{percent}}%)",
+    "demoPayment": "Demo payment",
+    "outcome": {
+      "approved": "Payment succeeds (demo)",
+      "declined": "Bank declines the payment (demo)"
+    },
+    "codes": {
+      "SOLD_OUT": "Not that many tickets are left. Lower the quantity.",
+      "PROMO_NOT_FOUND": "This promo code does not exist for this event.",
+      "PROMO_INACTIVE": "This promo code is not active right now.",
+      "PROMO_EXHAUSTED": "This promo code has reached its usage limit.",
+      "MAX_PER_ORDER": "Too many tickets for one order.",
+      "BAD_QUANTITY": "Invalid quantity.",
+      "PAID_SALES_INACTIVE": "Paid sales for this event are not active yet.",
+      "SALE_WINDOW_CLOSED": "Sales for this ticket type are closed right now.",
+      "EVENT_NOT_ON_SALE": "This event is not on sale.",
+      "TICKET_TYPE_NOT_FOUND": "This ticket type is not available.",
+      "HOLD_EXPIRED": "Your reservation expired. Please start again.",
+      "HOLD_NOT_ACTIVE": "Your reservation is no longer valid. Please start again.",
+      "HOLD_NOT_FOUND": "Reservation not found. Please start again.",
+      "PAYMENT_DECLINED": "Payment declined (demo). Pick another outcome and retry — your reservation is kept.",
+      "SESSION": "Your session has expired. Please sign in again.",
+      "GENERIC": "Could not complete the order. Please try again."
+    }
   },
   "orders": {
     "title": "My orders & tickets",
@@ -501,7 +561,10 @@
     "sendCancel": "Send request",
     "cancelSent": "Cancellation request sent to the organizer.",
     "cancelSubject": "Ticket cancellation: {{event}}",
-    "cancelDefaultReason": "The attendee asked to cancel the ticket."
+    "cancelDefaultReason": "The attendee asked to cancel the ticket.",
+    "viewTicket": "Ticket",
+    "refundedNote": "Refunded, the ticket is no longer valid.",
+    "cancelledNote": "Cancelled, the ticket is no longer valid."
   },
   "ticket": {
     "print": "Print / Save as PDF (A4)",
@@ -515,7 +578,10 @@
     "id": "Ticket ID",
     "footer": "Show the QR code at the entrance. The digital and printed copies are the same ticket and can be used once.",
     "notFound": "Ticket not found",
-    "backToOrders": "← Back to my orders"
+    "backToOrders": "← Back to my orders",
+    "downloadPdf": "Download PDF",
+    "pdfFailed": "Could not download the PDF: {{reason}}",
+    "invalidBanner": "Ticket is not valid — {{status}}"
   },
   "auth": {
     "loginTitle": "Log in to BiletFlow",
@@ -534,6 +600,279 @@
     "signup": "Sign up",
     "signingUp": "Signing up...",
     "noAccount": "Don't have an account?",
-    "haveAccount": "Already have an account?"
+    "haveAccount": "Already have an account?",
+    "email": "Email",
+    "forgot": "Forgot password?",
+    "forgotTitle": "Reset password",
+    "forgotHint": "Enter your account email and we will send you a link to set a new password.",
+    "sendResetLink": "Send link",
+    "resetSent": "If an account with {{email}} exists, a reset link is on its way.",
+    "resetTitle": "New password",
+    "newPassword": "New password",
+    "savePassword": "Save password",
+    "passwordChanged": "Password changed. You can sign in now.",
+    "passwordHint": "At least 6 characters.",
+    "checkInboxTitle": "Confirm your email",
+    "checkInbox": "We sent an email to {{email}}. Open the link in it to confirm your address.",
+    "resendVerification": "Send the email again",
+    "verificationResent": "Email sent again.",
+    "signupNoConfirm": "Account created. You can sign in now.",
+    "verifyTitle": "Email confirmation",
+    "verified": "Your email is confirmed and you are signed in.",
+    "toLogin": "Go to sign in",
+    "sessionExpired": "Your session has expired. Please sign in again.",
+    "errors": {
+      "badCredentials": "Wrong email or password.",
+      "notConfirmed": "Your email is not confirmed yet. Check your inbox.",
+      "suspended": "This account has been suspended by an administrator.",
+      "service": "The sign-in service is unavailable. Try again later.",
+      "shortPassword": "The password must be at least 6 characters long.",
+      "weakPassword": "The password is too weak. Use at least 6 characters.",
+      "badLink": "The link is invalid or has expired.",
+      "tooMany": "Too many requests. Wait a minute and try again."
+    }
+  },
+  "roles": {
+    "attendee": "Attendee",
+    "organizer": "Organizer",
+    "event_admin": "Check-in staff",
+    "platform_admin": "Platform admin"
+  },
+  "profile": {
+    "title": "Profile",
+    "fullName": "Full name",
+    "phone": "Phone",
+    "payout": "Payout details (IBAN / account)",
+    "payoutHint": "Required to activate paid sales. Demo only: no money is transferred.",
+    "saved": "Profile saved.",
+    "saveFailed": "Could not save: {{reason}}",
+    "nameRequired": "Please enter your name."
+  },
+  "orderPage": {
+    "notFound": "Order not found",
+    "tickets": "Tickets",
+    "ticketsIssued_one": "{{count}} ticket issued.",
+    "ticketsIssued_other": "{{count}} tickets issued."
+  },
+  "notifications": {
+    "label_one": "Notifications, {{count}} unread",
+    "label_other": "Notifications, {{count}} unread",
+    "title": "Notifications",
+    "empty": "No new notifications.",
+    "allCases": "All cases"
+  },
+  "support": {
+    "title": "Support",
+    "attendeeHint": "Your requests to organizers. Replies show up here and in notifications.",
+    "organizerHint": "Cases from attendees of your events and your own requests to platform support.",
+    "newCase": "New request",
+    "newTitle": "Contact support",
+    "platformTitle": "Contact platform support",
+    "contactPlatform": "Contact platform support",
+    "workspace": "Support cases",
+    "askOrganizer": "Ask the organizer",
+    "helpOrder": "Help with this order",
+    "helpShort": "Help",
+    "about": "About: {{what}}",
+    "category": "Topic",
+    "subject": "Subject",
+    "message": "Message",
+    "send": "Send",
+    "fillAll": "Please fill in the subject and the message.",
+    "createFailed": "Could not open the case: {{reason}}",
+    "status": "Status",
+    "all": "All",
+    "empty": "No cases yet.",
+    "unread": "New replies",
+    "mine": "mine",
+    "notFound": "Case not found or you do not have access to it",
+    "back": "← All cases",
+    "ctxEvent": "Event",
+    "ctxOrder": "Order",
+    "ctxTicket": "Ticket",
+    "staffTools": "Case actions",
+    "assignToMe": "Assign to me",
+    "assignedToYou": "Assigned to you",
+    "assigned": "The case is assigned to you.",
+    "statusChanged": "Status updated.",
+    "escalate": "Escalate to platform",
+    "escalateNote": "What do you need from platform support?",
+    "escalateSend": "Escalate",
+    "escalated": "Platform support case #{{id}} created.",
+    "thread": "Conversation",
+    "you": "You",
+    "requester": "Requester",
+    "staff": "Support",
+    "reply": "Reply",
+    "pollHint": "New messages load automatically.",
+    "resolvedNote": "This case is resolved. Open a new one if you still need help.",
+    "statuses": {
+      "OPEN": "Open",
+      "IN_PROGRESS": "In progress",
+      "WAITING_FOR_CUSTOMER": "Waiting for customer",
+      "RESOLVED": "Resolved"
+    },
+    "categories": {
+      "ticket_delivery": "Ticket delivery",
+      "payment": "Payment",
+      "refund": "Refund",
+      "seating": "Seating",
+      "event_information": "Event information",
+      "check_in": "Check-in",
+      "account": "Account",
+      "technical": "Technical problem"
+    }
+  },
+  "campaigns": {
+    "upgradePending": "Fixed-amount discounts, per-tier scope and disabling a campaign need the campaign upgrade on the server, which is not available yet. Percent campaigns work now.",
+    "listTitle": "Campaigns",
+    "loadFailed": "Could not load campaigns.",
+    "empty": "No campaigns for this event yet.",
+    "state": {
+      "active": "Active",
+      "scheduled": "Scheduled",
+      "expired": "Expired",
+      "disabled": "Disabled"
+    },
+    "allTiers": "All ticket types",
+    "stats": {
+      "scans": "Link visits",
+      "redemptions": "Redemptions",
+      "tickets": "Tickets",
+      "discount": "Discount given",
+      "net": "Net revenue"
+    },
+    "destination": "Tracking link {{link}} opens {{target}} with the code applied; the discount is confirmed by the server at checkout.",
+    "copyLink": "Copy link",
+    "copied": "Link copied.",
+    "copyFailed": "Could not copy automatically. Link: {{link}}",
+    "showQr": "QR code",
+    "downloadQr": "Download QR (PNG)",
+    "enable": "Enable",
+    "disable": "Disable",
+    "toggleFailed": "Could not change the campaign: {{reason}}",
+    "newTitle": "New campaign",
+    "name": "Name",
+    "code": "Promo code",
+    "discountType": "Discount type",
+    "type": {
+      "percent": "Percent",
+      "fixed_kzt": "Fixed amount (₸)"
+    },
+    "percent": "Discount, %",
+    "fixed": "Discount, ₸",
+    "scope": "Applies to",
+    "maxUses": "Maximum redemptions",
+    "starts": "Starts (optional)",
+    "ends": "Expires",
+    "create": "Create campaign",
+    "fixErrors": "Please fix the following:",
+    "created": "Campaign {{code}} created.",
+    "createFailed": "Could not create the campaign: {{reason}}",
+    "errors": {
+      "name": "Enter a campaign name.",
+      "code": "Code: 3–32 letters, digits, - or _.",
+      "percent": "Percent must be a whole number from 1 to 100.",
+      "fixed": "Fixed discount must be a whole number of tenge, at least 1.",
+      "maxUses": "Maximum redemptions must be at least 1.",
+      "ends": "Choose when the campaign expires.",
+      "window": "The expiry must be after the start."
+    }
+  },
+  "history": {
+    "action": "Action",
+    "loadFailed": "Could not load the history.",
+    "empty": "No recorded activity yet.",
+    "noMatch": "No entries match the filters.",
+    "system": "System",
+    "showing": "Showing {{shown}} of {{total}}",
+    "more": "Show more"
+  },
+  "roster": {
+    "unavailable": "The attendee roster and CSV export need the organizer roster API on the server, which is not available yet.",
+    "refundUnavailable": "Refunds need the refund API on the server, which is not available yet. Refund buttons are hidden until it is.",
+    "name": "Name",
+    "ticketType": "Ticket type",
+    "statusCol": "Status",
+    "checkedIn": "Checked in",
+    "status": {
+      "valid": "Valid",
+      "checked_in": "Checked in",
+      "refunded": "Refunded",
+      "cancelled": "Cancelled"
+    },
+    "export": "Export CSV",
+    "exported": "Exported {{count}} attendees.",
+    "exportFailed": "Export failed: {{reason}}",
+    "privacy": "The roster and CSV contain names, ticket type, status and check-in time only; contact details are not exported.",
+    "loadFailed": "Could not load the roster.",
+    "empty": "No attendees.",
+    "refund": "Refund order",
+    "confirmRefund": "Refund the whole order that includes {{name}}? Every ticket in that order is invalidated. This is a simulated refund.",
+    "refunded": "Order refunded.",
+    "refundFailed": "Refund failed: {{reason}}",
+    "prev": "Previous",
+    "next": "Next",
+    "range": "{{from}}–{{to}} of {{total}}"
+  },
+  "admin": {
+    "title": "Admin console",
+    "subtitle": "Platform moderation, payments and settings. Every change is checked by the server.",
+    "tabs": {
+      "users": "Users",
+      "events": "Events",
+      "orders": "Orders",
+      "payments": "Payments",
+      "support": "Support",
+      "campaigns": "Campaigns",
+      "settings": "Settings"
+    },
+    "loadFailed": "Could not load this list.",
+    "empty": "Nothing found.",
+    "searchUsers": "Search by email or name",
+    "searchEvents": "Search by title",
+    "role": "Role",
+    "status": "Status",
+    "paidSales": "Paid sales",
+    "paid": {
+      "NONE": "Not activated",
+      "ACTIVE": "Active",
+      "SUSPENDED": "Suspended"
+    },
+    "activationNote": "Paid-sales activation is automatic after the organizer completes the checklist; there is no manual approval queue. Use the paid-sales filter to review activation state.",
+    "email": "Email",
+    "name": "Name",
+    "event": "Event",
+    "state": "State",
+    "suspendedBadge": "Suspended",
+    "activeBadge": "Active",
+    "suspend": "Suspend",
+    "unsuspend": "Unsuspend",
+    "suspendTitle": "Suspend",
+    "reason": "Reason",
+    "reasonShort": "Enter at least 3 characters.",
+    "suspendConfirm": "Suspend",
+    "suspended": "Suspended. The reason was recorded in the audit log.",
+    "unsuspended": "Unsuspended.",
+    "auditMissing": "The change was applied but the audit log entry could not be recorded. Tell the platform owner.",
+    "actionFailed": "Action failed: {{reason}}",
+    "userId": "User ID",
+    "eventId": "Event ID",
+    "amount": "Amount",
+    "created": "Created",
+    "escalated": "Escalated",
+    "campaignsUnavailable": "Campaign review needs an admin campaign API, which does not exist yet. Organizers manage their own campaigns.",
+    "feeTitle": "Paid-sales activation fee",
+    "feeHint": "This is the fee shown to organizers and charged (simulated) when they activate paid sales. Changing it affects activations from now on.",
+    "feeLabel": "Fee, ₸",
+    "feeInvalid": "Enter a whole number of tenge, 0 or more.",
+    "feeConfirm": "Set the activation fee to {{fee}}?",
+    "feeSaved": "Activation fee set to {{fee}}.",
+    "feeCurrent": "Current fee: {{fee}}",
+    "exportTitle": "Operational export",
+    "exportHint": "CSV files contain ids, status, amounts and dates only; no emails or payout details.",
+    "exportEvents": "Export events",
+    "exportOrders": "Export orders",
+    "exported": "Exported {{count}} rows."
   }
 }

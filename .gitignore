@@ -220,3 +220,5 @@ __marimo__/
 .streamlit/secrets.toml
 
 *.db
+# FS-20 local email copies
+backend/outbox_previews/

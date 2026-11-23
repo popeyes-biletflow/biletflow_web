@@ -3,12 +3,10 @@ import { useTranslation } from 'react-i18next';
 import { formatKZT, HttpError } from '../../services/events';
 import {
   CHECKLIST_KEYS, organizerApi,
-  type Checklist, type ChecklistKey, type OrganizerEvent, type OrganizerTicketType, type Profile,
+  type ActivationStatus, type Checklist, type ChecklistKey, type OrganizerEvent, type OrganizerTicketType, type Profile,
 } from '../../services/organizer';
 import { Notice, type NoticeState } from '../Notice';
 import { inputClass } from './EventEditor';
-
-const ACTIVATION_FEE_KZT = 5000;
 
 interface Props {
   token: string;
@@ -27,6 +25,20 @@ export function PaidSalesActivation({ token, event, types, onActivated, onGoToTi
   const [terms, setTerms] = useState(false);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<NoticeState>(null);
+  const [status, setStatus] = useState<ActivationStatus | null>(null);
+  const [statusFailed, setStatusFailed] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
+
+  useEffect(() => {
+    let live = true;
+    organizerApi.activation(token, event.id)
+      .then((st) => { if (live) { setStatus(st); setStatusFailed(false); } })
+      .catch(() => { if (live) setStatusFailed(true); });
+    return () => { live = false; };
+  }, [token, event.id, event.paid_sales_status, types, reloadKey]);
+
+  const fee = status?.activation_fee_kzt ?? null;
+  const feeText = fee === null ? '…' : formatKZT(fee);
 
   useEffect(() => {
     organizerApi.profile(token)
@@ -36,13 +48,14 @@ export function PaidSalesActivation({ token, event, types, onActivated, onGoToTi
 
   const active = event.paid_sales_status === 'ACTIVE';
   const suspended = event.paid_sales_status === 'SUSPENDED';
-  const hasPaidType = types.some((tt) => (tt.price ?? 0) > 0);
-  const hasPayout = Boolean(profile?.payout_info?.trim());
+  const hasPaidType = status?.checklist.at_least_one_paid_ticket_type?.passed ?? types.some((tt) => (tt.price ?? 0) > 0);
+  const hasPayout = status?.checklist.valid_payout_account?.passed ?? Boolean(profile?.payout_info?.trim());
+  const identityKnown = status?.checklist.identity_verified;
 
   const local: Record<ChecklistKey, ItemState> = {
     at_least_one_paid_ticket_type: hasPaidType ? 'passed' : 'missing',
     valid_payout_account: hasPayout ? 'passed' : 'missing',
-    identity_verified: 'passed',
+    identity_verified: identityKnown ? (identityKnown.passed ? 'passed' : 'missing') : 'pending',
     activation_fee_paid: active ? 'passed' : 'pending',
     paid_event_terms_accepted: active || terms ? 'passed' : 'missing',
   };
@@ -59,6 +72,7 @@ export function PaidSalesActivation({ token, event, types, onActivated, onGoToTi
     setBusy(true);
     try {
       setProfile(await organizerApi.savePayout(token, payout.trim()));
+      setReloadKey((k) => k + 1);
       setNotice({ kind: 'success', text: t('activation.payoutSaved') });
     } catch (e) {
       setNotice({ kind: 'error', text: t('activation.payoutFailed', { reason: (e as Error).message }) });
@@ -74,7 +88,7 @@ export function PaidSalesActivation({ token, event, types, onActivated, onGoToTi
       const res = await organizerApi.activatePaidSales(token, event.id, terms);
       setNotice({
         kind: 'success',
-        text: res.status === 'already_active' ? t('activation.alreadyActive') : t('activation.success', { fee: formatKZT(res.activation_fee_kzt ?? ACTIVATION_FEE_KZT) }),
+        text: res.status === 'already_active' ? t('activation.alreadyActive') : t('activation.success', { fee: formatKZT(res.activation_fee_kzt ?? fee ?? 0) }),
       });
       onActivated();
     } catch (e) {
@@ -117,9 +131,14 @@ export function PaidSalesActivation({ token, event, types, onActivated, onGoToTi
             <li key={key} className="flex gap-3 p-4">
               <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-sm font-bold ${color[s]}`} aria-hidden>{icon[s]}</span>
               <div className="min-w-0 flex-1">
-                <p className="font-medium">{t(`activation.items.${key}`)}</p>
+                <p className="font-medium">
+                  {t(`activation.items.${key}`)}
+                  {(key === 'identity_verified' || key === 'activation_fee_paid') && status?.simulated && (
+                    <span className="ml-2 rounded-full bg-gray-100 px-2 py-0.5 text-xs font-semibold text-gray-600">{t('activation.demoBadge')}</span>
+                  )}
+                </p>
                 <p className={`text-sm ${s === 'missing' ? 'text-red-700' : 'text-gray-500'}`}>
-                  {s === 'missing' ? t(`activation.missing.${key}`) : t(`activation.ok.${key}`, { fee: formatKZT(ACTIVATION_FEE_KZT) })}
+                  {s === 'missing' ? t(`activation.missing.${key}`) : t(`activation.ok.${key}`, { fee: feeText })}
                 </p>
 
                 {key === 'at_least_one_paid_ticket_type' && s === 'missing' && (
@@ -145,7 +164,7 @@ export function PaidSalesActivation({ token, event, types, onActivated, onGoToTi
                 {key === 'paid_event_terms_accepted' && !active && (
                   <label className="mt-2 flex items-start gap-2 text-sm">
                     <input type="checkbox" checked={terms} onChange={(e) => setTerms(e.target.checked)} className="mt-1" />
-                    <span>{t('activation.termsText', { fee: formatKZT(ACTIVATION_FEE_KZT) })}</span>
+                    <span>{t('activation.termsText', { fee: feeText })}</span>
                   </label>
                 )}
               </div>
@@ -159,9 +178,15 @@ export function PaidSalesActivation({ token, event, types, onActivated, onGoToTi
           {missing.length > 0 && (
             <p className="text-sm text-red-700">{t('activation.stillMissing', { count: missing.length })}</p>
           )}
-          <button onClick={activate} disabled={busy}
+          {statusFailed && (
+            <p role="alert" className="text-sm text-red-700">
+              {t('activation.statusFailed')}{' '}
+              <button onClick={() => setReloadKey((k) => k + 1)} className="font-semibold underline">{t('common.retry')}</button>
+            </p>
+          )}
+          <button onClick={activate} disabled={busy || fee === null}
             className="rounded-lg bg-amber-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-amber-700 disabled:opacity-50">
-            {busy ? t('activation.activating') : t('activation.activate', { fee: formatKZT(ACTIVATION_FEE_KZT) })}
+            {busy ? t('activation.activating') : t('activation.activate', { fee: feeText })}
           </button>
           <p className="text-xs text-gray-500">{t('activation.simulatedNote')}</p>
         </div>

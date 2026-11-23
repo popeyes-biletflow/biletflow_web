@@ -2,6 +2,7 @@
 
 Endpoints
 ---------
+GET    /api/organizer/events/{event_id}/activation
 POST   /api/organizer/events/{event_id}/activate-paid-sales
 POST   /api/organizer/events/{event_id}/staff
 GET    /api/organizer/events/{event_id}/staff
@@ -65,6 +66,42 @@ def get_current_activation_fee() -> int:
     except Exception:
         pass
     return DEFAULT_ACTIVATION_FEE_KZT
+
+
+@router.get("/events/{event_id}/activation")
+async def activation_status(
+    event_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    _assert_organizer_or_platform_admin(current_user)
+    db = db_for_user(current_user.access_token)
+    event_row = _assert_owns_event(db, event_id, current_user)
+
+    try:
+        tiers = db.table("ticket_types").select("id, price").eq("event_id", event_id).execute().data or []
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=sanitize_error(exc))
+
+    paid_status = event_row.get("paid_sales_status") or "NONE"
+    active = paid_status == "ACTIVE" or bool(event_row.get("paid_sales_active"))
+    fee = get_current_activation_fee()
+    payout = current_user.payout_info
+    has_paid_tier = any((row.get("price") or 0) > 0 for row in tiers)
+    has_payout = bool(isinstance(payout, str) and payout.strip())
+
+    return {
+        "event_id": event_id,
+        "paid_sales_status": "SUSPENDED" if event_row.get("is_suspended") else paid_status,
+        "paid_sales_active": active,
+        "activation_fee_kzt": fee,
+        "simulated": True,
+        "checklist": {
+            "at_least_one_paid_ticket_type": {"passed": has_paid_tier},
+            "valid_payout_account": {"passed": has_payout},
+            "identity_verified": {"passed": True, "simulated": True},
+            "activation_fee_paid": {"passed": active, "simulated": True, "amount_kzt": fee},
+        },
+    }
 
 
 @router.post("/events/{event_id}/activate-paid-sales")
@@ -242,6 +279,18 @@ async def activate_paid_sales(
             "paid_sales_status": "ACTIVE",
             "paid_sales_active": True,
         }
+
+    try:
+        import notify
+        notify.notify(
+            "PAYOUT_STATUS", current_user.id,
+            {"event_title": event_row.get("title") or "", "status": "ACTIVE",
+             "reason": "Demo payout account verified, activation fee recorded (simulated).",
+             "path": f"/organizer/events/{event_id}"},
+            f"payout:{event_id}:active", email=current_user.email,
+        )
+    except Exception:
+        pass
 
     return {
         "status": "activated",

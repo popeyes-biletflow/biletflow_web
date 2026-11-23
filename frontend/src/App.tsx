@@ -6,14 +6,24 @@ import { LanguageSwitcher } from './i18n/LanguageSwitcher';
 import { LoginForm } from './components/LoginForm';
 import { SignupForm } from './components/SignupForm';
 import { CheckoutModal } from './components/CheckoutModal';
+import { SupportDialog } from './components/SupportDialog';
 import { saveCampaignPromo } from './services/tickets';
 import { TicketDashboard } from './pages/TicketDashboard';
 import { EventsPage } from './pages/EventsPage';
 import { EventDetailsPage } from './pages/EventDetailsPage';
 import { OrganizerDashboard } from './pages/OrganizerDashboard';
 import { EventManageRoute } from './pages/EventManagePage';
+import { AdminConsole } from './pages/admin/AdminConsole';
 import { TicketView } from './pages/TicketView';
-import { getEvent, type EventItem } from './services/events';
+import { AuthCallbackPage, ForgotPasswordPage, ResetPasswordPage } from './pages/AuthPages';
+import { ProfilePage } from './pages/ProfilePage';
+import { OrderPage } from './pages/OrderPage';
+import { SupportPage } from './pages/SupportPage';
+import { SupportCasePage } from './pages/SupportCasePage';
+import { NotificationBell } from './components/NotificationBell';
+import { NotificationsProvider } from './context/NotificationsContext';
+import { RequireAuth } from './components/RequireAuth';
+import { useEvent } from './hooks/useEvent';
 
 const navClass = ({ isActive }: { isActive: boolean }) =>
   `rounded-md px-3 py-1 text-sm font-medium transition ${isActive ? 'bg-blue-600 text-white' : 'text-gray-700 hover:bg-gray-100'}`;
@@ -23,23 +33,35 @@ function EventPurchase() {
   const { id = '' } = useParams();
   const { user, token } = useAuth();
   const { t } = useTranslation();
-  const [event, setEvent] = useState<EventItem | null>(null);
+  const [params] = useSearchParams();
+  const promo = params.get('promo');
+  const { event } = useEvent(id, token);
   const [open, setOpen] = useState(false);
+  const [help, setHelp] = useState(false);
 
-  useEffect(() => { getEvent(id, token).then(setEvent).catch(() => setEvent(null)); }, [id, token]);
+  // Campaign QR: /events/:id?promo=CODE — сохраняем код и сразу открываем оформление
+  useEffect(() => {
+    if (!promo) return;
+    saveCampaignPromo(promo);
+    if (user) setOpen(true);
+  }, [promo, user]);
 
   // drafts and cancelled events can be previewed by the owner but not bought
   if (!event || event.status !== 'published' || event.ticketTiers.length === 0) return null;
+  const next = encodeURIComponent(`/events/${id}${promo ? `?promo=${promo}` : ''}`);
   return (
     <div className="mx-auto max-w-4xl px-6 pb-10">
+      {promo && <p className="mb-3 rounded-lg bg-emerald-50 p-3 text-sm text-emerald-800">{t('checkout.campaignBanner', { code: promo.toUpperCase() })}</p>}
       {user ? (
         <>
           <button onClick={() => setOpen(true)}
             className="rounded-lg bg-emerald-600 px-6 py-3 font-semibold text-white hover:bg-emerald-700">{t('nav.buy')}</button>
           <CheckoutModal isOpen={open} onClose={() => setOpen(false)} event={event} />
+          <button onClick={() => setHelp(true)} className="ml-4 text-sm font-semibold text-blue-600 hover:underline">{t('support.askOrganizer')}</button>
+          <SupportDialog open={help} onClose={() => setHelp(false)} context={{ event_id: event.id }} contextLabel={event.title} defaultCategory="event_information" />
         </>
       ) : (
-        <Link to="/login" className="inline-block rounded-lg border border-emerald-600 px-6 py-3 font-semibold text-emerald-700 hover:bg-emerald-50">
+        <Link to={`/login?next=${next}`} className="inline-block rounded-lg border border-emerald-600 px-6 py-3 font-semibold text-emerald-700 hover:bg-emerald-50">
           {t('nav.loginToBuy')}
         </Link>
       )}
@@ -70,8 +92,11 @@ function MainApp() {
             <>
               <NavLink to="/tickets" className={navClass}>{t('nav.tickets')}</NavLink>
               {user.role === 'organizer' && <NavLink to="/organizer" className={navClass}>{t('nav.organizer')}</NavLink>}
-              <span className="text-sm text-gray-600">{t('nav.hello', { name: user.name || user.email })}</span>
-              <button onClick={() => { logout(); navigate('/events'); }}
+              {user.role === 'platform_admin' && <NavLink to="/admin" className={navClass}>{t('nav.admin')}</NavLink>}
+              <NavLink to="/support" className={navClass}>{t('nav.support')}</NavLink>
+              <NotificationBell />
+              <NavLink to="/profile" className={navClass}>{t('nav.hello', { name: user.name || user.email })}</NavLink>
+              <button onClick={async () => { await logout(); navigate('/events'); }}
                 className="rounded-md border border-gray-300 px-3 py-1 text-sm font-medium hover:bg-gray-100">{t('nav.logout')}</button>
             </>
           ) : (
@@ -89,13 +114,21 @@ function MainApp() {
         <Route path="/events" element={<EventsPage />} />
         <Route path="/events/:id" element={<><EventDetailsPage /><EventPurchase /></>} />
         <Route path="/checkout" element={<CampaignLanding />} />
-        <Route path="/login" element={<LoginForm onSwitchToSignup={() => navigate('/signup')} onSuccess={() => navigate('/events')} />} />
-        <Route path="/signup" element={<SignupForm onSwitchToLogin={() => navigate('/login')} onSuccess={() => navigate('/login')} />} />
-        <Route path="/tickets" element={user ? <TicketDashboard /> : <Navigate to="/login" replace />} />
-        <Route path="/tickets/:ticketId" element={user ? <TicketView /> : <Navigate to="/login" replace />} />
-        <Route path="/organizer" element={user ? <OrganizerDashboard /> : <Navigate to="/login" replace />} />
-        <Route path="/organizer/events/new" element={user ? <EventManageRoute /> : <Navigate to="/login" replace />} />
-        <Route path="/organizer/events/:id" element={user ? <EventManageRoute /> : <Navigate to="/login" replace />} />
+        <Route path="/login" element={<LoginForm />} />
+        <Route path="/signup" element={<SignupForm />} />
+        <Route path="/auth/callback" element={<AuthCallbackPage />} />
+        <Route path="/auth/forgot" element={<ForgotPasswordPage />} />
+        <Route path="/auth/reset-password" element={<ResetPasswordPage />} />
+        <Route path="/profile" element={<RequireAuth><ProfilePage /></RequireAuth>} />
+        <Route path="/tickets" element={<RequireAuth><TicketDashboard /></RequireAuth>} />
+        <Route path="/orders/:orderId" element={<RequireAuth><OrderPage /></RequireAuth>} />
+        <Route path="/support" element={<RequireAuth><SupportPage /></RequireAuth>} />
+        <Route path="/support/:caseId" element={<RequireAuth><SupportCasePage /></RequireAuth>} />
+        <Route path="/tickets/:ticketId" element={<RequireAuth><TicketView /></RequireAuth>} />
+        <Route path="/organizer" element={<RequireAuth roles={['organizer']}><OrganizerDashboard /></RequireAuth>} />
+        <Route path="/organizer/events/new" element={<RequireAuth roles={['organizer']}><EventManageRoute /></RequireAuth>} />
+        <Route path="/organizer/events/:id" element={<RequireAuth roles={['organizer']}><EventManageRoute /></RequireAuth>} />
+        <Route path="/admin" element={<RequireAuth roles={['platform_admin']}><AdminConsole /></RequireAuth>} />
         <Route path="*" element={<main className="mx-auto max-w-4xl p-6"><h2 className="text-2xl font-bold">{t('nav.notFound')}</h2><Link to="/events" className="text-blue-600">{t('nav.toEvents')}</Link></main>} />
       </Routes>
     </div>
@@ -105,9 +138,11 @@ function MainApp() {
 export default function App() {
   return (
     <AuthProvider>
-      <BrowserRouter>
-        <MainApp />
-      </BrowserRouter>
+      <NotificationsProvider>
+        <BrowserRouter>
+          <MainApp />
+        </BrowserRouter>
+      </NotificationsProvider>
     </AuthProvider>
   );
 }

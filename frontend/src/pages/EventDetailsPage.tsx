@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '../context/AuthContext';
-import { getEvent, formatKZT, type EventItem } from '../services/events';
+import { formatKZT } from '../services/events';
+import { useEvent } from '../hooks/useEvent';
 import { downloadIcs } from '../services/calendar';
 import { formatEventDate, categoryKey } from '../i18n';
 import { HybridVenueMap } from '../components/HybridVenueMap';
@@ -11,15 +12,17 @@ export function EventDetailsPage() {
   const { id = '' } = useParams();
   const { t } = useTranslation();
   const { token } = useAuth();
-  const [event, setEvent] = useState<EventItem | null>(null);
-  const [state, setState] = useState<'loading' | 'ok' | 'missing'>('loading');
+  const { event, state, retry } = useEvent(id, token);
   const [now] = useState(() => Date.now());
 
-  useEffect(() => {
-    getEvent(id, token).then((e) => { setEvent(e); setState('ok'); }).catch(() => setState('missing'));
-  }, [id, token]);
-
-  if (state === 'loading') return <main className="mx-auto max-w-4xl p-6 text-gray-500">{t('details.loading')}</main>;
+  if (state === 'loading') return <main className="mx-auto max-w-4xl p-6 text-gray-500" role="status" aria-busy="true">{t('details.loading')}</main>;
+  if (state === 'error') return (
+    <main className="mx-auto max-w-4xl p-6">
+      <p role="alert" className="rounded-lg bg-red-50 p-4 text-red-700">{t('details.loadError')}</p>
+      <button onClick={retry} className="mt-4 rounded-lg bg-blue-600 px-4 py-2 font-semibold text-white hover:bg-blue-700">{t('common.retry')}</button>
+      <Link to="/events" className="ml-4 inline-block text-blue-600">{t('details.back')}</Link>
+    </main>
+  );
   if (!event) return (
     <main className="mx-auto max-w-4xl p-6">
       <h2 className="text-2xl font-bold">{t('details.notFound')}</h2>
@@ -29,6 +32,8 @@ export function EventDetailsPage() {
 
   const fmt = (iso: string) => formatEventDate(iso, event.timezone, 'full');
   const isPreview = event.status === 'draft' || event.visibility !== 'public';
+  const regNotOpen = event.registrationOpensAt !== null && Date.parse(event.registrationOpensAt) > now;
+  const regClosed = event.registrationClosesAt !== null && Date.parse(event.registrationClosesAt) < now;
 
   return (
     <main className="mx-auto max-w-4xl p-6">
@@ -38,6 +43,11 @@ export function EventDetailsPage() {
       ) : isPreview && (
         <div role="status" className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
           {t('details.previewBanner', { status: t(`eventStatus.${event.status}`), visibility: t(`visibility.${event.visibility}`) })}
+        </div>
+      )}
+      {event.status === 'published' && (regNotOpen || regClosed) && (
+        <div role="status" className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+          {regNotOpen ? t('details.registrationNotOpen', { date: fmt(event.registrationOpensAt!) }) : t('details.registrationClosed')}
         </div>
       )}
       {event.imageUrl && <img src={event.imageUrl} alt="" className="mt-4 aspect-[21/9] w-full rounded-xl object-cover" />}
@@ -76,6 +86,9 @@ export function EventDetailsPage() {
                 {tier.priceKZT > 0 && !event.paidSalesActive && <span className="block text-xs text-amber-700">{t('details.paidNotOnSale')}</span>}
                 {tier.saleStartsAt && Date.parse(tier.saleStartsAt) > now && (
                   <span className="block text-xs text-gray-500">{t('ticketTypes.from', { date: fmt(tier.saleStartsAt) })}</span>
+                )}
+                {tier.saleEndsAt && Date.parse(tier.saleEndsAt) < now && (
+                  <span className="block text-xs text-gray-500">{t('details.salesEnded')}</span>
                 )}
               </span>
             </li>
