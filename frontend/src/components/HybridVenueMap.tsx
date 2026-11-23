@@ -53,6 +53,7 @@ export const HybridVenueMap: React.FC<HybridVenueMapProps> = ({
     return propTiers || event?.ticketTiers || [];
   }, [propTiers, event?.ticketTiers]);
 
+  const canBuy = !event || event.status === 'published';
   const venueName = propVenueName || event?.venueName || 'Venue';
   const venueAddress = propVenueAddress || event?.venueAddress || '';
 
@@ -195,6 +196,7 @@ export const HybridVenueMap: React.FC<HybridVenueMapProps> = ({
 
   // Functional Book Ticket action
   const handleBookTicket = () => {
+    if (!canBuy) return;
     if (!selectedSeats.length && !orderedTiers.length) return;
 
     const targetTierId = selectedSeats[0]?.tierId || orderedTiers[0]?.id || '';
@@ -527,14 +529,16 @@ export const HybridVenueMap: React.FC<HybridVenueMapProps> = ({
                     </span>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={handleBookTicket}
-                    className="rounded-xl bg-emerald-600 px-5 py-2.5 text-xs sm:text-sm font-bold text-white shadow-sm hover:bg-emerald-700 transition flex items-center gap-1.5"
-                  >
-                    <span>{user ? t('hybridMap.bookSeats', { defaultValue: 'Book ticket' }) : t('hybridMap.loginToBook', { defaultValue: 'Sign in to buy' })}</span>
-                    <span>→</span>
-                  </button>
+                  {canBuy && (
+                    <button
+                      type="button"
+                      onClick={handleBookTicket}
+                      className="rounded-xl bg-emerald-600 px-5 py-2.5 text-xs sm:text-sm font-bold text-white shadow-sm hover:bg-emerald-700 transition flex items-center gap-1.5"
+                    >
+                      <span>{user ? t('hybridMap.bookSeats', { defaultValue: 'Book ticket' }) : t('hybridMap.loginToBook', { defaultValue: 'Sign in to buy' })}</span>
+                      <span>→</span>
+                    </button>
+                  )}
                 </div>
               </div>
             ) : hoveredSeat ? (
@@ -659,7 +663,7 @@ export const HybridVenueMap: React.FC<HybridVenueMapProps> = ({
       )}
 
       {/* Embedded CheckoutModal triggered directly from the Seating Plan */}
-      {event && (
+      {event && canBuy && (
         <CheckoutModal
           isOpen={checkoutOpen}
           onClose={() => setCheckoutOpen(false)}
