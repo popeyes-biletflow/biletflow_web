@@ -71,6 +71,39 @@
     "selected": "{{tier}} — {{price}}",
     "legend": "Tiers"
   },
+  "carousel": {
+    "featured": "Featured events",
+    "viewEvent": "View event & tickets",
+    "from": "from {{price}}",
+    "free": "Free entry",
+    "previous": "Previous slide",
+    "next": "Next slide",
+    "pause": "Pause carousel",
+    "play": "Play carousel",
+    "slideOf": "Slide {{current}} of {{total}}"
+  },
+  "hybridMap": {
+    "title": "Hybrid interactive venue map",
+    "subtitle": "Explore seating tiers, realistic stage sightlines, and venue entrance points",
+    "tabSeating": "Seating & stage layout",
+    "tabLocation": "Location & transit",
+    "tabSectors": "Sectors & perks",
+    "filterAll": "All sections",
+    "zoomIn": "Zoom in",
+    "zoomOut": "Zoom out",
+    "resetView": "Reset view",
+    "available": "Available",
+    "soldOut": "Sold out",
+    "gates": "Entry gates guide",
+    "transit": "Transit & parking",
+    "parkingInfo": "On-site underground and surface parking available.",
+    "busInfo": "Direct bus stops within 200m of the main entrance.",
+    "accessibleNotice": "Designated wheelchair spaces with barrier-free elevator access.",
+    "close": "Close (~5-15m)",
+    "medium": "Medium (~15-35m)",
+    "panoramic": "Panoramic (~35-60m)",
+    "selectThisTier": "Select this seat"
+  },
   "dates": {
     "months": [
       "January",

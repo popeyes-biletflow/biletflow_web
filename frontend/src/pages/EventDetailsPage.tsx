@@ -5,8 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import { getEvent, formatKZT, type EventItem } from '../services/events';
 import { downloadIcs } from '../services/calendar';
 import { formatEventDate, categoryKey } from '../i18n';
-import { VenueMap } from '../components/VenueMap';
-import { SeatingLayout } from '../components/SeatingLayout';
+import { HybridVenueMap } from '../components/HybridVenueMap';
 
 export function EventDetailsPage() {
   const { id = '' } = useParams();
@@ -84,8 +83,7 @@ export function EventDetailsPage() {
         </ul>
       </section>
 
-      <SeatingLayout tiers={event.ticketTiers} />
-      <VenueMap venueName={event.venueName} venueAddress={event.venueAddress} />
+      <HybridVenueMap event={event} />
 
       <button onClick={() => downloadIcs(event)} className="mt-6 rounded-lg bg-blue-600 px-6 py-3 font-semibold text-white hover:bg-blue-700">
         {t('details.addToCalendar')}
