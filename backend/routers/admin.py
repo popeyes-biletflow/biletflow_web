@@ -47,6 +47,14 @@ def record_audit(entry: dict) -> bool:
         return False
 
 
+def ensure_applied(res, what: str) -> None:
+    if not getattr(res, "data", None):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"The {what} update was not applied: platform admin write access is missing in the database policies.",
+        )
+
+
 def require_reason(payload: AdminSuspensionRequest) -> str:
     reason = (payload.reason or "").strip()
     if len(reason) < 3:
@@ -107,13 +115,14 @@ def suspend_event(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found.")
 
     try:
-        db.table("events").update({
+        upd = db.table("events").update({
             "is_suspended": True,
             "paid_sales_status": "SUSPENDED",
             "paid_sales_active": False,
         }).eq("id", event_id).execute()
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=sanitize_error(exc))
+    ensure_applied(upd, "event")
 
     # Audit log entry
     audited = record_audit({
@@ -164,13 +173,14 @@ def unsuspend_event(
 
     restore_paid = event_was_activated(event_id)
     try:
-        db.table("events").update({
+        upd = db.table("events").update({
             "is_suspended": False,
             "paid_sales_status": "ACTIVE" if restore_paid else "NONE",
             "paid_sales_active": restore_paid,
         }).eq("id", event_id).execute()
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=sanitize_error(exc))
+    ensure_applied(upd, "event")
 
     audited = record_audit({
         "action": "EVENT_UNSUSPENDED",
@@ -211,9 +221,10 @@ def suspend_user(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
 
     try:
-        db.table("profiles").update({"is_suspended": True}).eq("id", user_id).execute()
+        upd = db.table("profiles").update({"is_suspended": True}).eq("id", user_id).execute()
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=sanitize_error(exc))
+    ensure_applied(upd, "user")
 
     audited = record_audit({
         "action": "USER_SUSPENDED",
@@ -248,9 +259,10 @@ def unsuspend_user(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
 
     try:
-        db.table("profiles").update({"is_suspended": False}).eq("id", user_id).execute()
+        upd = db.table("profiles").update({"is_suspended": False}).eq("id", user_id).execute()
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=sanitize_error(exc))
+    ensure_applied(upd, "user")
 
     audited = record_audit({
         "action": "USER_UNSUSPENDED",

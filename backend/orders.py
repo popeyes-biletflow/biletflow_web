@@ -109,6 +109,8 @@ async def create_order(body: OrderIn, request: Request, user: CurrentUser = Depe
 
     ev = db.table("events").select("*").eq("id", hold["event_id"]).execute()
     event = ev.data[0] if ev.data else {}
+    if hold["status"] != "converted" and (event.get("is_suspended") is True or event.get("paid_sales_status") == "SUSPENDED"):
+        raise HTTPException(400, "EVENT_SUSPENDED")
 
     # двойной клик или повтор после обрыва — отдаём уже созданный заказ
     if hold["status"] == "converted":

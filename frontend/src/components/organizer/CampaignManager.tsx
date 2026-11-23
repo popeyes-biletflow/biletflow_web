@@ -182,11 +182,6 @@ export function CampaignManager({ token, event, types }: Props) {
                     <button onClick={() => setQrFor(qrFor === c.campaign_id ? null : c.campaign_id)} className="text-blue-600" aria-expanded={qrFor === c.campaign_id}>
                       {t('campaigns.showQr')}
                     </button>
-                    {upgrade && (
-                      <button onClick={() => toggle(c)} disabled={busy} className={c.is_disabled ? 'text-emerald-700' : 'text-red-600'}>
-                        {c.is_disabled ? t('campaigns.enable') : t('campaigns.disable')}
-                      </button>
-                    )}
                   </div>
                   {qrFor === c.campaign_id && (
                     <div className="flex items-end gap-3">
@@ -196,6 +191,14 @@ export function CampaignManager({ token, event, types }: Props) {
                       </button>
                     </div>
                   )}
+                </div>
+              )}
+              {!c.qr_link && <p className="mt-3 text-xs text-gray-500">{t('campaigns.linkUnavailable')}</p>}
+              {upgrade && (
+                <div className="mt-2 text-xs font-semibold">
+                  <button onClick={() => toggle(c)} disabled={busy} className={c.is_disabled ? 'text-emerald-700' : 'text-red-600'}>
+                    {c.is_disabled ? t('campaigns.enable') : t('campaigns.disable')}
+                  </button>
                 </div>
               )}
             </li>

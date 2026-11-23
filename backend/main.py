@@ -336,6 +336,17 @@ VISIBILITIES = ("public", "unlisted", "private")
 INACTIVE_TICKET_STATUSES = ("cancelled", "refunded")
 
 
+def mirror_legacy_event_columns(row: dict, creating: bool = False) -> None:
+    if row.get("starts_at"):
+        row["event_date"] = row["starts_at"]
+    if row.get("venue_name") is not None:
+        row["venue"] = row["venue_name"]
+    if creating:
+        from datetime import datetime as _dt, timezone as _tz
+        row.setdefault("event_date", _dt.now(_tz.utc).isoformat())
+        row.setdefault("venue", row.get("venue_name") or "")
+
+
 def validate_event_payload(data: dict, existing: Optional[dict] = None) -> None:
     merged = {**(existing or {}), **data}
     visibility = merged.get("visibility")
@@ -383,7 +394,7 @@ def get_events():
             .eq("visibility", "public")
             .execute()
         )
-        return response.data
+        return [row for row in (response.data or []) if not row.get("is_suspended")]
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -402,6 +413,7 @@ async def create_organizer_event(
     validate_event_payload(row)
     row["organizer_id"] = current_user.id
     row["status"] = "draft"
+    mirror_legacy_event_columns(row, creating=True)
     try:
         response = db.table("events").insert(row).execute()
     except Exception as e:
@@ -462,6 +474,7 @@ async def update_organizer_event(
             detail="No fields provided for update.",
         )
     validate_event_payload(update_data, existing=event)
+    mirror_legacy_event_columns(update_data)
     try:
         response = (
             db.table("events")
