@@ -13,7 +13,8 @@
     "loginToBuy": "Sign in to get a ticket",
     "noAccess": "No access",
     "noAccessHint": "This section is not available for the “{{role}}” role.",
-    "support": "Support"
+    "support": "Support",
+    "admin": "Admin"
   },
   "discovery": {
     "title": "Discover events",
@@ -208,7 +209,10 @@
     "tabs": {
       "details": "Details",
       "tickets": "Ticket types",
-      "paid": "Paid sales"
+      "paid": "Paid sales",
+      "campaigns": "Campaigns",
+      "attendees": "Attendees",
+      "history": "History"
     },
     "done": {
       "publish": "Event published.",
@@ -219,7 +223,15 @@
       "publish": "Could not publish: {{reason}}",
       "unpublish": "Could not unpublish: {{reason}}",
       "cancel": "Could not cancel: {{reason}}"
-    }
+    },
+    "noAccess": "This event does not exist or you do not manage it.",
+    "duplicate": "Duplicate",
+    "duplicateTitle": "Duplicate as a new draft",
+    "duplicateHint": "Copies the details and ticket types only. Attendees, orders, payments, support cases and history are not copied; paid sales start inactive.",
+    "duplicateStart": "New start (optional)",
+    "duplicateConfirm": "Create draft copy",
+    "duplicateFailed": "Could not duplicate the event: {{reason}}",
+    "copySuffix": "(copy)"
   },
   "ticketTypes": {
     "empty": "No ticket types yet. Add a free or paid one.",
@@ -261,7 +273,8 @@
       "belowSold": "Quantity cannot be lower than already sold ({{sold}}).",
       "maxPerOrder": "Max per order must be at least 1.",
       "saleWindow": "Sale end must be after sale start."
-    }
+    },
+    "counts": "Available {{available}} · Reserved {{reserved}} · Sold {{sold}} · Refunded {{refunded}} · Checked in {{checkedIn}}"
   },
   "activation": {
     "statusActive": "Paid sales are active",
@@ -307,7 +320,9 @@
     "success": "Paid sales activated. Activation fee {{fee}} recorded (simulated).",
     "alreadyActive": "Paid sales are already active for this event.",
     "failed": "Activation failed. Missing requirements:",
-    "requestFailed": "Activation request failed: {{reason}}"
+    "requestFailed": "Activation request failed: {{reason}}",
+    "demoBadge": "demo",
+    "statusFailed": "Could not load the activation status."
   },
   "organizer": {
     "title": "Organizer dashboard",
@@ -654,5 +669,157 @@
       "account": "Account",
       "technical": "Technical problem"
     }
+  },
+  "campaigns": {
+    "upgradePending": "Fixed-amount discounts, per-tier scope and disabling a campaign need the campaign upgrade on the server, which is not available yet. Percent campaigns work now.",
+    "listTitle": "Campaigns",
+    "loadFailed": "Could not load campaigns.",
+    "empty": "No campaigns for this event yet.",
+    "state": {
+      "active": "Active",
+      "scheduled": "Scheduled",
+      "expired": "Expired",
+      "disabled": "Disabled"
+    },
+    "allTiers": "All ticket types",
+    "stats": {
+      "scans": "Link visits",
+      "redemptions": "Redemptions",
+      "tickets": "Tickets",
+      "discount": "Discount given",
+      "net": "Net revenue"
+    },
+    "destination": "Tracking link {{link}} opens {{target}} with the code applied; the discount is confirmed by the server at checkout.",
+    "copyLink": "Copy link",
+    "copied": "Link copied.",
+    "copyFailed": "Could not copy automatically. Link: {{link}}",
+    "showQr": "QR code",
+    "downloadQr": "Download QR (PNG)",
+    "enable": "Enable",
+    "disable": "Disable",
+    "toggleFailed": "Could not change the campaign: {{reason}}",
+    "newTitle": "New campaign",
+    "name": "Name",
+    "code": "Promo code",
+    "discountType": "Discount type",
+    "type": {
+      "percent": "Percent",
+      "fixed_kzt": "Fixed amount (₸)"
+    },
+    "percent": "Discount, %",
+    "fixed": "Discount, ₸",
+    "scope": "Applies to",
+    "maxUses": "Maximum redemptions",
+    "starts": "Starts (optional)",
+    "ends": "Expires",
+    "create": "Create campaign",
+    "fixErrors": "Please fix the following:",
+    "created": "Campaign {{code}} created.",
+    "createFailed": "Could not create the campaign: {{reason}}",
+    "errors": {
+      "name": "Enter a campaign name.",
+      "code": "Code: 3–32 letters, digits, - or _.",
+      "percent": "Percent must be a whole number from 1 to 100.",
+      "fixed": "Fixed discount must be a whole number of tenge, at least 1.",
+      "maxUses": "Maximum redemptions must be at least 1.",
+      "ends": "Choose when the campaign expires.",
+      "window": "The expiry must be after the start."
+    }
+  },
+  "history": {
+    "action": "Action",
+    "loadFailed": "Could not load the history.",
+    "empty": "No recorded activity yet.",
+    "noMatch": "No entries match the filters.",
+    "system": "System",
+    "showing": "Showing {{shown}} of {{total}}",
+    "more": "Show more"
+  },
+  "roster": {
+    "unavailable": "The attendee roster and CSV export need the organizer roster API on the server, which is not available yet.",
+    "refundUnavailable": "Refunds need the refund API on the server, which is not available yet. Refund buttons are hidden until it is.",
+    "name": "Name",
+    "ticketType": "Ticket type",
+    "statusCol": "Status",
+    "checkedIn": "Checked in",
+    "status": {
+      "valid": "Valid",
+      "checked_in": "Checked in",
+      "refunded": "Refunded",
+      "cancelled": "Cancelled"
+    },
+    "export": "Export CSV",
+    "exported": "Exported {{count}} attendees.",
+    "exportFailed": "Export failed: {{reason}}",
+    "privacy": "The roster and CSV contain names, ticket type, status and check-in time only; contact details are not exported.",
+    "loadFailed": "Could not load the roster.",
+    "empty": "No attendees.",
+    "refund": "Refund order",
+    "confirmRefund": "Refund the whole order that includes {{name}}? Every ticket in that order is invalidated. This is a simulated refund.",
+    "refunded": "Order refunded.",
+    "refundFailed": "Refund failed: {{reason}}",
+    "prev": "Previous",
+    "next": "Next",
+    "range": "{{from}}–{{to}} of {{total}}"
+  },
+  "admin": {
+    "title": "Admin console",
+    "subtitle": "Platform moderation, payments and settings. Every change is checked by the server.",
+    "tabs": {
+      "users": "Users",
+      "events": "Events",
+      "orders": "Orders",
+      "payments": "Payments",
+      "support": "Support",
+      "campaigns": "Campaigns",
+      "settings": "Settings"
+    },
+    "loadFailed": "Could not load this list.",
+    "empty": "Nothing found.",
+    "searchUsers": "Search by email or name",
+    "searchEvents": "Search by title",
+    "role": "Role",
+    "status": "Status",
+    "paidSales": "Paid sales",
+    "paid": {
+      "NONE": "Not activated",
+      "ACTIVE": "Active",
+      "SUSPENDED": "Suspended"
+    },
+    "activationNote": "Paid-sales activation is automatic after the organizer completes the checklist; there is no manual approval queue. Use the paid-sales filter to review activation state.",
+    "email": "Email",
+    "name": "Name",
+    "event": "Event",
+    "state": "State",
+    "suspendedBadge": "Suspended",
+    "activeBadge": "Active",
+    "suspend": "Suspend",
+    "unsuspend": "Unsuspend",
+    "suspendTitle": "Suspend",
+    "reason": "Reason",
+    "reasonShort": "Enter at least 3 characters.",
+    "suspendConfirm": "Suspend",
+    "suspended": "Suspended. The reason was recorded in the audit log.",
+    "unsuspended": "Unsuspended.",
+    "auditMissing": "The change was applied but the audit log entry could not be recorded. Tell the platform owner.",
+    "actionFailed": "Action failed: {{reason}}",
+    "userId": "User ID",
+    "eventId": "Event ID",
+    "amount": "Amount",
+    "created": "Created",
+    "escalated": "Escalated",
+    "campaignsUnavailable": "Campaign review needs an admin campaign API, which does not exist yet. Organizers manage their own campaigns.",
+    "feeTitle": "Paid-sales activation fee",
+    "feeHint": "This is the fee shown to organizers and charged (simulated) when they activate paid sales. Changing it affects activations from now on.",
+    "feeLabel": "Fee, ₸",
+    "feeInvalid": "Enter a whole number of tenge, 0 or more.",
+    "feeConfirm": "Set the activation fee to {{fee}}?",
+    "feeSaved": "Activation fee set to {{fee}}.",
+    "feeCurrent": "Current fee: {{fee}}",
+    "exportTitle": "Operational export",
+    "exportHint": "CSV files contain ids, status, amounts and dates only; no emails or payout details.",
+    "exportEvents": "Export events",
+    "exportOrders": "Export orders",
+    "exported": "Exported {{count}} rows."
   }
 }

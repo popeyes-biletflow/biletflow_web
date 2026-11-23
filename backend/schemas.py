@@ -325,6 +325,7 @@ class AdminSuspensionResponse(BaseModel):
     suspended: bool
     message: str
     entity_id: str
+    audit_recorded: bool = True
 
 
 class ActivationFeeSettingSchema(BaseModel):

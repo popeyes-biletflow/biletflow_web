@@ -243,23 +243,28 @@ function EventAnalyticsPanel({ token, summary, onClose }: { token: string; summa
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [typeId, setTypeId] = useState('');
-  const [data, setData] = useState<EventAnalytics | null>(null);
-  const [error, setError] = useState('');
+  const [result, setResult] = useState<{ key: string; data: EventAnalytics | null; error: string } | null>(null);
+  const key = `${summary.event.id}|${dateFrom}|${dateTo}|${typeId}`;
 
   useEffect(() => {
+    let live = true;
     organizerApi
       .analytics(token, summary.event.id, { date_from: dateFrom, date_to: dateTo, ticket_type_id: typeId })
-      .then((d) => { setData(d); setError(''); })
-      .catch((e) => setError(e.message));
-  }, [token, summary.event.id, dateFrom, dateTo, typeId]);
+      .then((d) => { if (live) setResult({ key, data: d, error: '' }); })
+      .catch((e) => { if (live) setResult({ key, data: null, error: e.message }); });
+    return () => { live = false; };
+  }, [token, summary.event.id, dateFrom, dateTo, typeId, key]);
 
-  const a = data ?? summary;
+  const current = result?.key === key ? result : null;
+  const data = current?.data ?? null;
+  const error = current?.error ?? '';
   const hasFilters = dateFrom || dateTo || typeId;
+  const a = data ?? (hasFilters || error ? null : summary);
 
   return (
     <section className="space-y-5">
       <div className="flex justify-between">
-        <h2 className="text-xl font-bold">{t('analytics.title', { title: a.event.title })}</h2>
+        <h2 className="text-xl font-bold">{t('analytics.title', { title: summary.event.title })}</h2>
         <button onClick={onClose} className="text-sm text-gray-500">{t('analytics.hide')}</button>
       </div>
 
@@ -285,8 +290,9 @@ function EventAnalyticsPanel({ token, summary, onClose }: { token: string; summa
         )}
       </div>
 
-      {error && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}
-
+      {error && <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}
+      {!a && !error && <p role="status" className="py-8 text-center text-sm text-gray-500">{t('common.loading')}</p>}
+      {a && <>
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <StatCard
           label={t('analytics.sold')}
@@ -353,6 +359,7 @@ function EventAnalyticsPanel({ token, summary, onClose }: { token: string; summa
           </p>
         </div>
       </div>
+      </>}
     </section>
   );
 }

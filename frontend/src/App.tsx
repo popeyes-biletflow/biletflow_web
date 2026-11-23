@@ -13,6 +13,7 @@ import { EventsPage } from './pages/EventsPage';
 import { EventDetailsPage } from './pages/EventDetailsPage';
 import { OrganizerDashboard } from './pages/OrganizerDashboard';
 import { EventManageRoute } from './pages/EventManagePage';
+import { AdminConsole } from './pages/admin/AdminConsole';
 import { TicketView } from './pages/TicketView';
 import { AuthCallbackPage, ForgotPasswordPage, ResetPasswordPage } from './pages/AuthPages';
 import { ProfilePage } from './pages/ProfilePage';
@@ -91,6 +92,7 @@ function MainApp() {
             <>
               <NavLink to="/tickets" className={navClass}>{t('nav.tickets')}</NavLink>
               {user.role === 'organizer' && <NavLink to="/organizer" className={navClass}>{t('nav.organizer')}</NavLink>}
+              {user.role === 'platform_admin' && <NavLink to="/admin" className={navClass}>{t('nav.admin')}</NavLink>}
               <NavLink to="/support" className={navClass}>{t('nav.support')}</NavLink>
               <NotificationBell />
               <NavLink to="/profile" className={navClass}>{t('nav.hello', { name: user.name || user.email })}</NavLink>
@@ -126,6 +128,7 @@ function MainApp() {
         <Route path="/organizer" element={<RequireAuth roles={['organizer']}><OrganizerDashboard /></RequireAuth>} />
         <Route path="/organizer/events/new" element={<RequireAuth roles={['organizer']}><EventManageRoute /></RequireAuth>} />
         <Route path="/organizer/events/:id" element={<RequireAuth roles={['organizer']}><EventManageRoute /></RequireAuth>} />
+        <Route path="/admin" element={<RequireAuth roles={['platform_admin']}><AdminConsole /></RequireAuth>} />
         <Route path="*" element={<main className="mx-auto max-w-4xl p-6"><h2 className="text-2xl font-bold">{t('nav.notFound')}</h2><Link to="/events" className="text-blue-600">{t('nav.toEvents')}</Link></main>} />
       </Routes>
     </div>
