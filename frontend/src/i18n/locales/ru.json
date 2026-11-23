@@ -104,7 +104,12 @@
     "close": "Близко (~5-15 м)",
     "medium": "Среднее (~15-35 м)",
     "panoramic": "Панорамное (~35-60 м)",
-    "selectThisTier": "Выбрать это место"
+    "selectThisTier": "Выбрать это место",
+    "row": "Ряд {{row}}",
+    "seat": "Место {{seat}}",
+    "total": "Итого",
+    "bookSeats": "Купить билет",
+    "selected": "Выбрано"
   },
   "dates": {
     "months": [

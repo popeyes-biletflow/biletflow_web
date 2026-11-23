@@ -102,7 +102,12 @@
     "close": "Close (~5-15m)",
     "medium": "Medium (~15-35m)",
     "panoramic": "Panoramic (~35-60m)",
-    "selectThisTier": "Select this seat"
+    "selectThisTier": "Select this seat",
+    "row": "Row {{row}}",
+    "seat": "Seat {{seat}}",
+    "total": "Total",
+    "bookSeats": "Book ticket",
+    "selected": "Selected"
   },
   "dates": {
     "months": [

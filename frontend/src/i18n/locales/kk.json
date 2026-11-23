@@ -102,7 +102,12 @@
     "close": "Жақын (~5-15 м)",
     "medium": "Орташа (~15-35 м)",
     "panoramic": "Панорамалық (~35-60 м)",
-    "selectThisTier": "Осы орынды таңдау"
+    "selectThisTier": "Осы орынды таңдау",
+    "row": "{{row}}-қатар",
+    "seat": "{{seat}}-орын",
+    "total": "Барлығы",
+    "bookSeats": "Билет сатып алу",
+    "selected": "Таңдалды"
   },
   "dates": {
     "months": [
