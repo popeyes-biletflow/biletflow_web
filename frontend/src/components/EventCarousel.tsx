@@ -166,14 +166,6 @@ export const EventCarousel: React.FC<EventCarouselProps> = ({ events }) => {
                     <span>{t('carousel.viewEvent', { defaultValue: 'View Event & Tickets' })}</span>
                     <span aria-hidden="true">→</span>
                   </Link>
-
-                  <span className="text-xs text-gray-400 font-mono hidden sm:inline">
-                    {t('carousel.slideOf', {
-                      current: String(idx + 1).padStart(2, '0'),
-                      total: String(total).padStart(2, '0'),
-                      defaultValue: `${idx + 1} / ${total}`
-                    })}
-                  </span>
                 </div>
               </div>
             </div>

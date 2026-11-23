@@ -223,9 +223,8 @@ export const HybridVenueMap: React.FC<HybridVenueMapProps> = ({
       {/* Header and Minimalist Tab Navigation */}
       <div className="border-b border-gray-100 bg-gray-50/80 px-5 py-4 sm:flex sm:items-center sm:justify-between">
         <div>
-          <h3 className="text-base font-bold text-gray-900 flex items-center gap-2">
-            <span>🎟️</span>
-            <span>{t('hybridMap.title', { defaultValue: 'Interactive Seating Plan' })}</span>
+          <h3 className="text-base font-bold text-gray-900">
+            {t('hybridMap.title', { defaultValue: 'Interactive Seating Plan' })}
           </h3>
           <p className="mt-0.5 text-xs text-gray-500">
             {t('hybridMap.subtitle', {
