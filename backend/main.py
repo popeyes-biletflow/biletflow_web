@@ -571,7 +571,7 @@ async def publish_organizer_event(
         )
     if not response.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found.")
-        record_event_audit("EVENT_PUBLISHED", event_id, current_user.id)
+    record_event_audit("EVENT_PUBLISHED", event_id, current_user.id)
     return response.data[0]
 
 
@@ -602,7 +602,7 @@ async def unpublish_organizer_event(
         )
     if not response.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found.")
-        record_event_audit("EVENT_UNPUBLISHED", event_id, current_user.id)
+    record_event_audit("EVENT_UNPUBLISHED", event_id, current_user.id)
     return response.data[0]
 
 

@@ -156,8 +156,8 @@ def test_hold_orders_counted_once_not_per_ticket():
     assert r["gross_kzt"] == 15000 + 0 + 10000  # не 3 × 15000
     assert r["discounts_kzt"] == 3000
     assert r["fees_kzt"] == 600 + 500
+    assert r["refunds_kzt"] == 10500
     assert r["refunded_fees_kzt"] == 500
-    assert r["net_kzt"] == 25000 - 3000 - (10500 - 500)
     assert r["net_kzt"] == 25000 - 3000 - (10500 - 500)
     assert r["orders"] == 2  # возвращённый заказ не считается
 
