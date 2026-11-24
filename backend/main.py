@@ -400,6 +400,10 @@ async def create_organizer_event(
     db = db_for_user(current_user.access_token)
     row = payload.model_dump(exclude_unset=True, mode="json")
     validate_event_payload(row)
+    if row.get("starts_at") and "event_date" not in row:
+        row["event_date"] = row["starts_at"]
+    if row.get("venue_name") and "venue" not in row:
+        row["venue"] = row["venue_name"]
     row["organizer_id"] = current_user.id
     row["status"] = "draft"
     try:
@@ -462,6 +466,10 @@ async def update_organizer_event(
             detail="No fields provided for update.",
         )
     validate_event_payload(update_data, existing=event)
+    if "starts_at" in update_data and "event_date" not in update_data:
+        update_data["event_date"] = update_data["starts_at"]
+    if "venue_name" in update_data and "venue" not in update_data:
+        update_data["venue"] = update_data["venue_name"]
     try:
         response = (
             db.table("events")
