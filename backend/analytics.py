@@ -162,7 +162,8 @@ def compute_event_analytics(event, ticket_types, tickets, orders,
     discounts = sum(r["discount"] for r in order_rows)
     fees = sum(r["fee"] for r in order_rows)
     refunds_total = sum(r["total"] for r in order_rows if r["refunded"])
-    net = gross - discounts - refunds_total
+    refunded_fees = sum(r["fee"] for r in order_rows if r["refunded"])
+    net = gross - discounts - (refunds_total - refunded_fees)
     live_orders = [r for r in order_rows if not r["refunded"]]
 
     # продажи по дням
@@ -250,6 +251,8 @@ def compute_event_analytics(event, ticket_types, tickets, orders,
             "discounts_kzt": discounts,
             "fees_kzt": fees,
             "refunds_kzt": refunds_total,
+            "refunded_fees_kzt": refunded_fees,
+            "fees_kept_kzt": fees - refunded_fees,
             "net_kzt": net,
             "orders": len(live_orders),
         },

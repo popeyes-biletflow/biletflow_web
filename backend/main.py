@@ -202,6 +202,17 @@ def load_owned_event(db: Client, event_id: str, current_user: CurrentUser) -> di
         )
     return event
 
+def record_event_audit(action: str, event_id: str, user_id: str, metadata: Optional[dict] = None) -> None:
+    try:
+        supabase.table("audit_log").insert({
+            "action": action,
+            "performed_by": user_id,
+            "entity_type": "event",
+            "entity_id": str(event_id),
+            "metadata": metadata or {},
+        }).execute()
+    except Exception:
+        pass
 
 def sold_count_for_type(db: Client, ticket_type_id: str) -> int:
     try:
@@ -426,8 +437,9 @@ async def create_organizer_event(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to create event.",
         )
-    return response.data[0]
-
+    created = response.data[0]
+    record_event_audit("EVENT_CREATED", created["id"], current_user.id, {"title": created.get("title")})
+    return created
 
 @app.get("/api/organizer/events")
 async def list_organizer_events(
@@ -490,6 +502,8 @@ async def update_organizer_event(
     if not response.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found.")
     updated = response.data[0]
+    record_event_audit("EVENT_UPDATED", event_id, current_user.id,
+                       {"changed_fields": sorted(update_data.keys())})
 
     # FS-20: держателям билетов пишем, только если поменялись дата / время / место
     watched = ("starts_at", "ends_at", "venue_name", "venue_address")
@@ -543,7 +557,6 @@ async def publish_organizer_event(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot publish unless the event has: " + ", ".join(missing) + ".",
         )
-    # TODO audit
     try:
         response = (
             db.table("events")
@@ -558,6 +571,7 @@ async def publish_organizer_event(
         )
     if not response.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found.")
+    record_event_audit("EVENT_PUBLISHED", event_id, current_user.id)
     return response.data[0]
 
 
@@ -588,6 +602,7 @@ async def unpublish_organizer_event(
         )
     if not response.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found.")
+    record_event_audit("EVENT_UNPUBLISHED", event_id, current_user.id)
     return response.data[0]
 
 
@@ -614,6 +629,9 @@ async def cancel_organizer_event(
     if not response.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found.")
     cancelled = response.data[0]
+    if previous.get("status") != "cancelled":
+        record_event_audit("EVENT_CANCELLED", event_id, current_user.id,
+                           {"previous_status": previous.get("status")})
 
     # FS-20: всем держателям билетов — письмо и уведомление об отмене (один раз на событие)
     if previous.get("status") != "cancelled":
