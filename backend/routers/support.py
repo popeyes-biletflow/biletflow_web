@@ -170,12 +170,14 @@ def assert_can_access_case(
         if not owns_event:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not manage this event.")
 
-        # Platform Admin is the only one who handles organizer-opened cases
+        # Platform Admin is the only one who handles organizer-opened cases.
+        # A platform admin who holds a ticket is a customer of this event, so the
+        # organizer handles their case like any attendee's (it was notified of it).
         try:
             prof = sb.table("profiles").select("role").eq("id", requester_id).execute()
             if prof.data:
                 requester_role = (prof.data[0].get("role") or "").strip().lower()
-                if requester_role in (ROLE_ORGANIZER, ROLE_PLATFORM_ADMIN):
+                if requester_role == ROLE_ORGANIZER:
                     raise HTTPException(
                         status_code=status.HTTP_403_FORBIDDEN,
                         detail="Only platform admins can handle organizer-opened cases.",
@@ -731,10 +733,10 @@ async def update_case_status(
             prof_res = db.table("profiles").select("role").eq("id", requester_id).execute()
             if prof_res.data:
                 req_role = (prof_res.data[0].get("role") or "").strip().lower()
-                if req_role != ROLE_ATTENDEE:
+                if req_role == ROLE_ORGANIZER:
                     raise HTTPException(
                         status_code=status.HTTP_403_FORBIDDEN,
-                        detail="Organizers can only update status on attendee-opened cases.",
+                        detail="Only platform admins can handle organizer-opened cases.",
                     )
         except HTTPException:
             raise
