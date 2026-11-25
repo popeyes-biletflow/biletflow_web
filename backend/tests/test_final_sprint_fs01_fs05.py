@@ -23,6 +23,7 @@ os.environ.setdefault("SUPABASE_URL", "http://localhost:54321")
 os.environ.setdefault("SUPABASE_KEY", "dummy-test-key")
 
 from crypto import generate_hmac_signature
+from tests import checkin_fake
 import deps
 import main as main_module
 from main import app, get_current_user, get_optional_user
@@ -65,6 +66,8 @@ class InMemoryDB:
         return InMemoryQuery(self, table_name)
 
     def rpc(self, rpc_name: str, params: dict):
+        if rpc_name in checkin_fake.RPCS:
+            return checkin_fake.call(self.tables, rpc_name, params)
         # Fallback to test simulation
         return MagicMock(data=None)
 
@@ -179,6 +182,7 @@ def execute_request(db: InMemoryDB, user: CurrentUser | None, method: str, url: 
          patch("routers.organizer.supabase", db), \
          patch("routers.organizer.db_for_user", lambda _t: db), \
          patch("routers.tickets.supabase", db), \
+         patch("routers.tickets.db_for_user", lambda _t: db), \
          patch("routers.mobile.supabase", db), \
          patch("routers.mobile.db_for_user", lambda _t: db), \
          patch("routers.support.supabase", db), \

@@ -374,6 +374,7 @@ def assign_event_staff(
             "event_id": event_id,
             "user_id": uid,
             "assigned_by": current_user.id,
+            "can_undo": payload.can_undo,
         }).execute()
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=sanitize_error(exc))
@@ -395,6 +396,7 @@ def assign_event_staff(
         user_id=uid,
         email=target_user.get("email"),
         full_name=target_user.get("full_name"),
+        can_undo=payload.can_undo,
     )
 
 
@@ -435,6 +437,7 @@ def list_event_staff(
             email=profiles.get(str(r["user_id"]), {}).get("email"),
             full_name=profiles.get(str(r["user_id"]), {}).get("full_name"),
             assigned_at=str(r.get("assigned_at") or ""),
+            can_undo=r.get("can_undo") is not False,
         )
         for r in assignments
     ]

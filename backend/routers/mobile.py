@@ -17,8 +17,10 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 
+from checkin import checkin_ticket
 from crypto import generate_hmac_signature, verify_hmac_signature
 from deps import VERIFY_SSL, db_for_user, get_current_user, sanitize_error, supabase
+from routers.tickets import can_undo_for_event
 from schemas import (
     CurrentUser,
     ROLE_ATTENDEE,
@@ -62,22 +64,14 @@ def assert_staff_assigned_to_event(event_id: str, current_user: CurrentUser, cli
         except Exception:
             pass
 
-    # 2. Check event_staff table
-    has_explicit_assignments = False
+    # 2. Staff explicitly assigned to this event
     try:
         st_res = sb.table("event_staff").select("*").eq("event_id", event_id).execute()
-        valid_staff_rows = [r for r in (st_res.data or []) if "user_id" in r and "status" not in r]
-        if valid_staff_rows:
-            has_explicit_assignments = True
-            for r in valid_staff_rows:
-                if str(r.get("user_id")) == current_user.id:
-                    return
+        for r in st_res.data or []:
+            if "user_id" in r and "status" not in r and str(r.get("user_id")) == current_user.id:
+                return
     except Exception:
         pass
-
-    # In dev/mock test environments without an event_staff roster configured, allow event_admin
-    if not has_explicit_assignments and role == ROLE_EVENT_ADMIN:
-        return
 
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
@@ -221,10 +215,6 @@ def get_mobile_events(
                 pass
             if assigned_ids:
                 event_rows = db.table("events").select("*").in_("id", assigned_ids).execute().data or []
-            else:
-                # If no explicit event_staff assignments exist, return events from db
-                res = db.table("events").select("*").execute()
-                event_rows = res.data or []
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -278,75 +268,8 @@ def validate_mobile_ticket(
             detail="This ticket belongs to a different event.",
         )
 
-    # 2. Check ticket existence and state
-    try:
-        t_res = (
-            db.table("tickets")
-            .select("id, status, event_id")
-            .eq("id", ticket_id)
-            .execute()
-        )
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=sanitize_error(exc),
-        )
-
-    if not t_res.data:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Ticket not found.",
-        )
-
-    ticket_row = t_res.data[0]
-    if str(ticket_row.get("event_id")) != str(event_id):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This ticket belongs to a different event.",
-        )
-
-    current_status = ticket_row.get("status")
-    if current_status == "checked_in":
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Ticket has already been used.",
-        )
-
-    if current_status in ("cancelled", "refunded"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Ticket is cancelled or refunded.",
-        )
-
-    # 3. Mark checked in atomically
-    try:
-        upd = (
-            db.table("tickets")
-            .update({
-                "status": "checked_in",
-                "checked_in_at": "now()",
-                "checked_in_by": current_user.id,
-                "updated_at": "now()",
-            })
-            .eq("id", ticket_id)
-            .execute()
-        )
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=sanitize_error(exc),
-        )
-
-    try:
-        db.table("audit_log").insert({
-            "action": "TICKET_CHECKIN",
-            "performed_by": current_user.id,
-            "entity_type": "ticket",
-            "entity_id": ticket_id,
-            "metadata": {"event_id": event_id, "checked_in_at": "now()"},
-        }).execute()
-    except Exception:
-        pass
+    # 2. Admit the ticket atomically in the database (one admission per ticket)
+    checkin_ticket(db, ticket_id, event_id, current_user.id)
 
     return MobileValidateResponse(
         valid=True,
@@ -386,7 +309,7 @@ def get_mobile_attendance(
     return AttendanceResponse(
         checkedIn=checked_in,
         total=total,
-        canUndoCheckIn=True,
+        canUndoCheckIn=can_undo_for_event(db, event_id, current_user),
     )
 
 
@@ -481,55 +404,12 @@ def manual_check_in_attendee(
             detail="ticketId is required.",
         )
 
-    try:
-        t_res = (
-            db.table("tickets")
-            .select("id, status, event_id")
-            .eq("id", ticket_id)
-            .eq("event_id", event_id)
-            .execute()
-        )
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=sanitize_error(exc),
-        )
-
-    if not t_res.data:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Ticket not found for this event.",
-        )
-
-    ticket = t_res.data[0]
-    if ticket.get("status") == "checked_in":
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Ticket has already been used.",
-        )
-
-    try:
-        db.table("tickets").update({
-            "status": "checked_in",
-            "checked_in_at": "now()",
-            "checked_in_by": current_user.id,
-            "updated_at": "now()",
-        }).eq("id", ticket_id).execute()
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=sanitize_error(exc),
-        )
-
-    try:
-        db.table("audit_log").insert({
-            "action": "TICKET_CHECKIN",
-            "performed_by": current_user.id,
-            "entity_type": "ticket",
-            "entity_id": ticket_id,
-            "metadata": {"event_id": event_id, "manual": True, "checked_in_at": "now()"},
-        }).execute()
-    except Exception:
-        pass
+    checkin_ticket(
+        db, ticket_id, event_id, current_user.id,
+        overrides={
+            "NOT_FOUND": (status.HTTP_404_NOT_FOUND, "Ticket not found for this event."),
+            "WRONG_EVENT": (status.HTTP_404_NOT_FOUND, "Ticket not found for this event."),
+        },
+    )
 
     return {"success": True, "ticketId": ticket_id}
