@@ -75,7 +75,7 @@ class FakeDB:
         return Query(self, name)
 
     def rpc(self, *_a, **_k):
-        raise RuntimeError("rpc not available in tests")
+        raise RuntimeError("PGRST202 Could not find the function public.activate_paid_sales in the schema cache")
 
 
 def event(**kw):
@@ -260,3 +260,21 @@ def test_my_tickets_only_returns_own_tickets_with_statuses():
         "t1": "ACTIVE", "t2": "USED", "t3": "REFUNDED", "t4": "CANCELLED",
     }
     assert by_id["t1"]["qr_payload"] and by_id["t3"]["qr_payload"] is None
+
+
+def test_activation_refused_by_database_does_not_fall_back_to_direct_writes():
+    """If activate_paid_sales refuses (for example the caller is not the organizer),
+    the API reports it and neither records a payment nor flips the event."""
+
+    class RefusingDB(FakeDB):
+        def rpc(self, *_a, **_k):
+            raise RuntimeError("Only the event organizer can activate paid sales")
+
+    db = RefusingDB(events=[event()], ticket_types=[dict(FREE), dict(PAID)], tickets=[], orders=[], payments=[])
+    org = CurrentUser(**{**ORGANIZER.model_dump(), "payout_info": "KZ00 1234"})
+    with patch("routers.organizer.db_for_user", lambda _t: db), patch("routers.organizer.supabase", db):
+        r = run(db, org, "post", "/api/organizer/events/ev-1/activate-paid-sales", json={"paid_event_terms_accepted": True})
+    assert r.status_code == 403
+    assert db.tables["payments"] == []
+    assert db.tables["events"][0]["paid_sales_status"] == "NONE"
+    assert db.tables["events"][0]["paid_sales_active"] is False

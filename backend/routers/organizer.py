@@ -104,6 +104,11 @@ async def activation_status(
     }
 
 
+def _is_missing_function(exc: Exception) -> bool:
+    text = str(exc)
+    return "PGRST202" in text or "Could not find the function" in text or "does not exist" in text
+
+
 @router.post("/events/{event_id}/activate-paid-sales")
 async def activate_paid_sales(
     event_id: str,
@@ -219,7 +224,16 @@ async def activate_paid_sales(
             payment_id = rpc_res.data.get("payment_id", payment_id)
         else:
             use_fallback = True
-    except Exception:
+    except Exception as exc:
+        # Only fall back when the database function is not installed. Any other failure
+        # (not the organizer, event suspended, database error) must stop the activation.
+        if not _is_missing_function(exc):
+            message = sanitize_error(exc)
+            denied = "organizer can activate" in message or "42501" in message
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN if denied else status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=message,
+            )
         use_fallback = True
 
     if use_fallback:
