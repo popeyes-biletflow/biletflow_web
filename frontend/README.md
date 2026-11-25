@@ -1,32 +1,32 @@
-# React + TypeScript + Vite
+# BiletFlow web app
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+React + TypeScript + Vite + Tailwind client for BiletFlow. It talks to the FastAPI backend in `../backend` (and to Supabase Auth for sign-in). See the [repository README](../README.md) for the full setup.
 
-Currently, two official plugins are available:
+## Run
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```bash
+cp .env.example .env     # VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY, VITE_API_URL
+npm install
+npm run dev              # http://localhost:5173
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+| Command | Purpose |
+| --- | --- |
+| `npm run dev` | development server |
+| `npm run build` | type-check (`tsc -b`) and production bundle |
+| `npm test` | unit tests (`vitest`) |
+| `npm run lint` | `oxlint` |
+
+`VITE_API_URL` defaults to `http://localhost:8000`. Use the computer's LAN address if the app must be opened from another device.
+
+## Structure
+
+| Path | Contents |
+| --- | --- |
+| `src/pages/` | events, event details, tickets, orders, organizer dashboard and event management, support, admin console |
+| `src/components/` | navbar, checkout modal, venue map and seating, ticket PDF, login and signup |
+| `src/services/` | API client and typed calls per area (events, tickets, organizer, support, admin) |
+| `src/i18n/` | Kazakh, Russian and English dictionaries |
+| `src/context/`, `src/hooks/` | session and shared state |
+
+Roles control the routes: attendees get events, tickets, orders and support; organizers add the dashboard and event management; platform admins get the admin console.

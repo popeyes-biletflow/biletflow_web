@@ -104,6 +104,11 @@ async def activation_status(
     }
 
 
+def _is_missing_function(exc: Exception) -> bool:
+    text = str(exc)
+    return "PGRST202" in text or "Could not find the function" in text or "does not exist" in text
+
+
 @router.post("/events/{event_id}/activate-paid-sales")
 async def activate_paid_sales(
     event_id: str,
@@ -219,7 +224,15 @@ async def activate_paid_sales(
             payment_id = rpc_res.data.get("payment_id", payment_id)
         else:
             use_fallback = True
-    except Exception:
+    except Exception as exc:
+        # fall back to direct writes only if the function is not installed
+        if not _is_missing_function(exc):
+            message = sanitize_error(exc)
+            denied = "organizer can activate" in message or "42501" in message
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN if denied else status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=message,
+            )
         use_fallback = True
 
     if use_fallback:
@@ -360,6 +373,7 @@ def assign_event_staff(
             "event_id": event_id,
             "user_id": uid,
             "assigned_by": current_user.id,
+            "can_undo": payload.can_undo,
         }).execute()
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=sanitize_error(exc))
@@ -381,6 +395,7 @@ def assign_event_staff(
         user_id=uid,
         email=target_user.get("email"),
         full_name=target_user.get("full_name"),
+        can_undo=payload.can_undo,
     )
 
 
@@ -421,6 +436,7 @@ def list_event_staff(
             email=profiles.get(str(r["user_id"]), {}).get("email"),
             full_name=profiles.get(str(r["user_id"]), {}).get("full_name"),
             assigned_at=str(r.get("assigned_at") or ""),
+            can_undo=r.get("can_undo") is not False,
         )
         for r in assignments
     ]

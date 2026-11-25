@@ -349,6 +349,7 @@ class OperationalExportResponse(BaseModel):
 class StaffAssignmentRequest(BaseModel):
     user_id: Optional[str] = None
     email: Optional[str] = None
+    can_undo: bool = True
 
 
 class StaffAssignmentItem(BaseModel):
@@ -358,6 +359,7 @@ class StaffAssignmentItem(BaseModel):
     email: Optional[str] = None
     full_name: Optional[str] = None
     assigned_at: Optional[str] = None
+    can_undo: bool = True
 
 
 # ---------------------------------------------------------------------------

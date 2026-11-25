@@ -4,10 +4,11 @@ Owner: Ibragim Mukashev. Currency: KZT only, whole tenge, no real card data (all
 
 ## 1. Migration order
 
-The migrations alter tables that predate them (`profiles`, `events`, `ticket_types`, `orders`, `tickets`). The base schema of those tables is not stored in the repository (see section 9), so a fresh database first needs the base tables from the Supabase project, then the files below in this exact order:
+`000_base_schema.sql` creates the base tables (`profiles`, `events`, `ticket_types`, `orders`, `tickets` and the rest) on an empty database. It was reconstructed from the live Supabase project on 2026-11-25 and is not a `pg_dump`: it holds tables, defaults, checks and keys only. The migrations below add functions, policies and the remaining columns. Apply them in this exact order; every file is idempotent and safe to re-run.
 
 | # | File | Purpose |
 |---|---|---|
+| 0 | `000_base_schema.sql` | base tables (reconstructed snapshot, see above) |
 | 1 | `pb8_events_columns.sql` | event columns used by discovery (category, starts_at, venue_name, ...) |
 | 2 | `events_ticket_types.sql` | event status/visibility/capacity, ticket type columns |
 | 3 | `001_support_cases.sql` | support cases and messages |
@@ -20,17 +21,28 @@ The migrations alter tables that predate them (`profiles`, `events`, `ticket_typ
 | 10 | `007_history_duplicate.sql` | `event_history`, `duplicate_event` |
 | 11 | `008_staff_atomic_admission_moderation.sql` | staff, notifications, atomic check-in |
 | 12 | `009_fs17_checkout.sql` | idempotent `finalize_order`, attendee data, `release_ticket_hold` |
-| 13 | `010_fs20_notifications.sql` | notification dedupe, email outbox |
-| 14 | `011_refunds.sql` | `refunds`, `events.refund_policy` |
-| 15 | `012_refund_order.sql` | atomic `refund_order` |
-| 16 | `013_campaign_upgrade.sql` | discount type/value, tier scope, disabled flag |
-| 17 | `014_campaign_logic.sql` | `create_campaign_v2`, `set_campaign_disabled`, new `create_ticket_hold` |
-| 18 | `015_organizer_finance.sql` | `organizer_payout_estimate`, `organizer_attendees` |
-| 19 | `016_event_metrics_activity.sql` | `event_metrics`, `event_activity`, audit_log is read-only for clients |
-| 20 | `017_followups.sql` | `duplicate_event` copies refund policy, legacy order reconciliation |
-| 21 | `seed_events.sql` | demo events and tiers (idempotent, edit the organizer email first) |
+| 13 | `009_ticket_types_rls_policies.sql` | ticket type row-level security policies |
+| 14 | `010_events_nullable_event_date.sql` | `events.event_date` becomes nullable so a new event can be created |
+| 15 | `010_fs20_notifications.sql` | notification dedupe, email outbox |
+| 16 | `011_refunds.sql` | `refunds`, `events.refund_policy` |
+| 17 | `012_refund_order.sql` | atomic `refund_order` |
+| 18 | `013_campaign_upgrade.sql` | discount type/value, tier scope, disabled flag |
+| 19 | `014_campaign_logic.sql` | `create_campaign_v2`, `set_campaign_disabled`, new `create_ticket_hold` |
+| 20 | `015_organizer_finance.sql` | `organizer_payout_estimate`, `organizer_attendees` |
+| 21 | `016_event_metrics_activity.sql` | `event_metrics`, `event_activity`, audit_log is read-only for clients |
+| 22 | `017_followups.sql` | `duplicate_event` copies refund policy, legacy order reconciliation |
+| 23 | `018_admin_moderation_and_campaign_policies.sql` | admin suspension rights, organizers read their own campaigns |
+| 24 | `019_atomic_checkin_staff_access.sql` | check-in/undo callable by assigned staff, `event_staff.can_undo`, staff read access to tickets |
+| 25 | `020_paid_sales_guard.sql` | paid-sales columns can only change through activation or moderation |
+| 26 | `seed_events.sql`, `seed_events_batch2.sql` | demo events and tiers (idempotent, edit the organizer email first) |
 
-All files are idempotent (`if not exists`, `create or replace`) and safe to re-run.
+The API requires 019 (check-in functions, `event_staff.can_undo`) and 020 (the activation function the API calls). Apply them before deploying the backend that uses them.
+
+Checks:
+
+- `docs/pre-demo-db-check.sql` (read-only, paste into the Supabase SQL editor): every row must be `true`.
+- `backend/tests/sql/run_fresh_install_check.sh`: builds an empty local PostgreSQL from files 0 to 25, twice, and runs the check above.
+- `backend/tests/sql/run_migration_checks.sh`: behaviour of 019 and 020, including 20 simultaneous scans of one ticket (exactly one admission).
 
 ## 2. Data ownership and access
 
@@ -131,6 +143,7 @@ Recovery: every migration can be re-run. To undo a refund test, set the order an
 
 ## 9. Known gaps
 
-- The base schema (`profiles`, `events`, `ticket_types`, `orders`, `tickets` before the migrations) is not in the repository. Export it with `pg_dump --schema-only` and add it as `000_base.sql` before claiming a clean fresh-database apply.
+- `000_base_schema.sql` is a reconstruction from table metadata, not a `pg_dump`. It carries no functions, policies or indexes beyond primary keys and the unique campaign slug; a real `pg_dump --schema-only` of the project remains the authoritative copy.
+- Row-level security is disabled on `tickets`, `support_cases`, `support_messages`, `payments`, `audit_log`, `event_staff`, `notifications` and `platform_settings` in the live project (Supabase advisory, 2026-11-25). The API authorizes every request itself, but anyone holding the public anon key can read or write those tables directly. Enabling RLS needs policies written for each table first; it is not done here.
 - The PB-19 dashboard reads legacy order columns (`subtotal_amount`, `discount_amount`, `fee_amount`, `promo_code`), so checkout-created orders show zero discounts there. The exact numbers are in `GET /api/organizer/events/{id}/metrics`.
 - Concurrency (two buyers for the last ticket or last redemption) is guaranteed by row locks in the database functions; it was checked by reading the functions and by manual tests, not by an automated parallel test.

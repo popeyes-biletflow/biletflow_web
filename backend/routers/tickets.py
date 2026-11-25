@@ -6,8 +6,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from supabase import create_client, Client, ClientOptions
 
+from checkin import checkin_ticket, undo_checkin as undo_checkin_atomic
 from crypto import generate_hmac_signature, verify_hmac_signature
-from deps import VERIFY_SSL, get_current_user, sanitize_error
+from deps import VERIFY_SSL, db_for_user, get_current_user, sanitize_error
 from schemas import (
     CurrentUser,
     TicketIssueRequest,
@@ -32,40 +33,47 @@ supabase: Client = create_client(
 router = APIRouter(prefix="/api/tickets", tags=["tickets"])
 
 
+def _staff_assignment(db: Any, event_id: str, user_id: str) -> Optional[dict]:
+    """Return this user's event_staff row for the event, if any."""
+    try:
+        st = db.table("event_staff").select("*").eq("event_id", event_id).execute()
+    except Exception:
+        return None
+    for row in st.data or []:
+        if "user_id" in row and "status" not in row and str(row.get("user_id")) == user_id:
+            return row
+    return None
+
+
+def _owns_event(db: Any, event_id: str, user_id: str) -> bool:
+    try:
+        ev = db.table("events").select("organizer_id").eq("id", event_id).execute()
+    except Exception:
+        return False
+    return bool(ev.data and str(ev.data[0].get("organizer_id")) == user_id)
+
+
 def is_staff_authorized_for_event(db: Any, event_id: str, current_user: CurrentUser) -> bool:
-    """Check whether caller is assigned staff, event owner, or platform admin."""
+    """Platform admin, the event's organizer, or staff explicitly assigned to this event."""
     role = (current_user.role or "").strip().lower().replace(" ", "_").replace("-", "_")
     if role not in STAFF_ROLES:
         return False
     if role in (ROLE_PLATFORM_ADMIN, "admin"):
         return True
-
-    # Explicit staff assignment
-    has_explicit = False
-    try:
-        st = db.table("event_staff").select("*").eq("event_id", event_id).execute()
-        valid_staff_rows = [r for r in (st.data or []) if "user_id" in r and "status" not in r]
-        if valid_staff_rows:
-            has_explicit = True
-            for r in valid_staff_rows:
-                if str(r.get("user_id")) == current_user.id:
-                    return True
-    except Exception:
-        pass
-
-    # Organizer owning the event
-    if role == ROLE_ORGANIZER:
-        try:
-            ev = db.table("events").select("organizer_id").eq("id", event_id).execute()
-            if ev.data and str(ev.data[0].get("organizer_id")) == current_user.id:
-                return True
-        except Exception:
-            pass
-
-    if not has_explicit and role == ROLE_EVENT_ADMIN:
+    if role == ROLE_ORGANIZER and _owns_event(db, event_id, current_user.id):
         return True
+    return _staff_assignment(db, event_id, current_user.id) is not None
 
-    return False
+
+def can_undo_for_event(db: Any, event_id: str, current_user: CurrentUser) -> bool:
+    """Admins and the event's organizer can always undo; staff need the assignment's can_undo flag."""
+    role = (current_user.role or "").strip().lower().replace(" ", "_").replace("-", "_")
+    if role in (ROLE_PLATFORM_ADMIN, "admin"):
+        return True
+    if role == ROLE_ORGANIZER and _owns_event(db, event_id, current_user.id):
+        return True
+    row = _staff_assignment(db, event_id, current_user.id)
+    return bool(row) and row.get("can_undo") is not False
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +171,7 @@ def issue_ticket(
 @router.post("/verify", response_model=TicketVerifyResponse, status_code=status.HTTP_200_OK)
 def verify_ticket(
     payload: TicketVerifyRequest,
-    current_user: Optional[CurrentUser] = Depends(get_current_user),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> TicketVerifyResponse:
     """Verify a QR payload and atomically check the ticket into an event."""
     qr_payload = payload.qr_payload
@@ -178,87 +186,20 @@ def verify_ticket(
 
     ticket_id: str = parsed["ticket_id"]
     event_id: str = parsed["event_id"]
-    staff_id = current_user.id if current_user else "anonymous-scanner"
-
-    if current_user:
-        role = (current_user.role or "").strip().lower().replace(" ", "_").replace("-", "_")
-        if role not in STAFF_ROLES:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Event staff access is required.",
-            )
-        if not is_staff_authorized_for_event(supabase, event_id, current_user):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You are not assigned to manage check-ins for this event.",
-            )
-
-    try:
-        result = (
-            supabase.table("tickets")
-            .select("id, status, event_id")
-            .eq("id", ticket_id)
-            .execute()
-        )
-    except Exception as exc:
+    role = (current_user.role or "").strip().lower().replace(" ", "_").replace("-", "_")
+    if role not in STAFF_ROLES:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=sanitize_error(exc),
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Event staff access is required.",
         )
-
-    if not result.data:
+    db = db_for_user(current_user.access_token)
+    if not is_staff_authorized_for_event(db, event_id, current_user):
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Ticket not found.",
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not assigned to manage check-ins for this event.",
         )
 
-    ticket_row = result.data[0]
-    if str(ticket_row.get("event_id")) != event_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This ticket belongs to a different event.",
-        )
-
-    if ticket_row.get("status") == "checked_in":
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Ticket has already been used.",
-        )
-
-    if ticket_row.get("status") in ("cancelled", "refunded"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Ticket is cancelled or refunded.",
-        )
-
-    try:
-        upd = (
-            supabase.table("tickets")
-            .update({
-                "status": "checked_in",
-                "checked_in_at": "now()",
-                "checked_in_by": staff_id,
-                "updated_at": "now()",
-            })
-            .eq("id", ticket_id)
-            .execute()
-        )
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=sanitize_error(exc),
-        )
-
-    try:
-        supabase.table("audit_log").insert({
-            "action": "TICKET_CHECKIN",
-            "performed_by": staff_id if staff_id != "anonymous-scanner" else None,
-            "entity_type": "ticket",
-            "entity_id": ticket_id,
-            "metadata": {"event_id": event_id, "checked_in_at": "now()"},
-        }).execute()
-    except Exception:
-        pass
+    checkin_ticket(db, ticket_id, event_id, current_user.id)
 
     return TicketVerifyResponse(
         valid=True,
@@ -298,66 +239,19 @@ def undo_checkin(
             detail="Both eventId and ticketId are required.",
         )
 
-    if not is_staff_authorized_for_event(supabase, str(event_id), current_user):
+    db = db_for_user(current_user.access_token)
+    if not is_staff_authorized_for_event(db, str(event_id), current_user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You are not assigned to manage check-ins for this event.",
         )
 
-    try:
-        res = (
-            supabase.table("tickets")
-            .select("id, status, event_id")
-            .eq("id", ticket_id)
-            .execute()
-        )
-    except Exception as exc:
+    if not can_undo_for_event(db, str(event_id), current_user):
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=sanitize_error(exc),
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not allowed to undo check-ins for this event.",
         )
 
-    if not res.data:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Ticket not found.",
-        )
-
-    row = res.data[0]
-    if str(row.get("event_id")) != str(event_id):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Ticket does not belong to this event.",
-        )
-
-    if row.get("status") != "checked_in":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Ticket is not checked in.",
-        )
-
-    try:
-        supabase.table("tickets").update({
-            "status": "valid",
-            "checked_in_at": None,
-            "checked_in_by": None,
-            "updated_at": "now()",
-        }).eq("id", ticket_id).execute()
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=sanitize_error(exc),
-        )
-
-    try:
-        supabase.table("audit_log").insert({
-            "action": "TICKET_CHECKIN_REVERSED",
-            "performed_by": current_user.id,
-            "entity_type": "ticket",
-            "entity_id": ticket_id,
-            "metadata": {"event_id": event_id, "reversed_at": "now()"},
-        }).execute()
-    except Exception:
-        pass
+    undo_checkin_atomic(db, str(ticket_id), str(event_id), current_user.id)
 
     return {"success": True, "message": "Check-in undone"}
