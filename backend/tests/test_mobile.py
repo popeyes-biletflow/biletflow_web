@@ -366,3 +366,18 @@ def test_assigning_staff_records_undo_permission():
     assert res.status_code in (200, 201), res.text
     assert res.json()["can_undo"] is False
     assert db.tables["event_staff"][0]["can_undo"] is False
+
+
+def test_attendee_list_excludes_refunded_and_cancelled():
+    """The roster matches the counter: refunded and cancelled tickets are not listed."""
+    as_staff()
+    extra = (
+        {"id": "t-ref", "event_id": EVENT_ID, "user_id": "u2", "status": "refunded"},
+        {"id": "t-can", "event_id": EVENT_ID, "user_id": "u3", "status": "cancelled"},
+        {"id": "t-in", "event_id": EVENT_ID, "user_id": "u4", "status": "checked_in"},
+    )
+    with _Patched(make_db(extra_tickets=extra)):
+        listed = client.get(f"/api/mobile/events/{EVENT_ID}/attendees").json()["attendees"]
+        counted = client.get(f"/api/mobile/events/{EVENT_ID}/attendance").json()
+    assert sorted(a["ticketId"] for a in listed) == sorted([TICKET_ID, "t-in"])
+    assert len(listed) == counted["total"]

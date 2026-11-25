@@ -338,7 +338,7 @@ def get_mobile_attendees(
             detail=sanitize_error(exc),
         )
 
-    tickets = t_res.data or []
+    tickets = [r for r in (t_res.data or []) if r.get("status") not in ("cancelled", "refunded")]
     user_ids = list({r["user_id"] for r in tickets if r.get("user_id")})
     profiles_by_id = {}
     if user_ids:
