@@ -1,5 +1,4 @@
--- Behaviour checks for migrations 019 (atomic check-in, staff access) and 020 (paid-sales guard).
--- Run through run_migration_checks.sh. Any failed expectation aborts with a non-zero exit.
+-- Checks for migrations 019 and 020. Run through run_migration_checks.sh.
 \set ON_ERROR_STOP on
 \set org   '00000000-0000-0000-0000-0000000000a1'
 \set org2  '00000000-0000-0000-0000-0000000000a2'

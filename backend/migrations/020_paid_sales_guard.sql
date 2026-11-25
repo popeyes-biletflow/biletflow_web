@@ -1,12 +1,4 @@
--- Migration 020: paid-sales state can only change through activation or moderation.
---
--- Before this, an organizer could update events.paid_sales_status / paid_sales_active on their
--- own event through the database API and skip the activation fee. This migration
---   1. makes activate_paid_sales run as the function owner, after checking the caller owns the
---      event (or is a platform admin), and
---   2. adds a trigger that rejects changes to those two columns made directly by an
---      `authenticated` / `anon` session, except by platform admins (suspension).
--- Writes made inside activate_paid_sales (owner) and by the service role are unaffected.
+-- Migration 020: paid_sales_status / paid_sales_active change only through activation or admin moderation.
 -- Requires 019 (is_platform_admin_user). Safe to re-run.
 
 CREATE OR REPLACE FUNCTION activate_paid_sales(
@@ -84,8 +76,7 @@ $$;
 REVOKE ALL ON FUNCTION activate_paid_sales(UUID, UUID, NUMERIC) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION activate_paid_sales(UUID, UUID, NUMERIC) TO authenticated, service_role;
 
--- SECURITY INVOKER on purpose: current_user is the session role for direct API writes and the
--- function owner when the change happens inside a SECURITY DEFINER function.
+-- invoker on purpose: current_user is the owner inside SECURITY DEFINER functions, the session role otherwise
 CREATE OR REPLACE FUNCTION guard_paid_sales_columns()
 RETURNS TRIGGER
 LANGUAGE plpgsql

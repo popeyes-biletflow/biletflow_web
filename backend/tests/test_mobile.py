@@ -65,7 +65,6 @@ ORGANIZER_ID = str(uuid.uuid4())
 
 
 def make_db(ticket_status="valid", can_undo=True, assigned=True, extra_tickets=()):
-    """FakeDB with one event, one ticket and the check-in functions of migration 019."""
     staff = [{"event_id": EVENT_ID, "user_id": STAFF_ID, "can_undo": can_undo}] if assigned else []
     db = FakeDB(
         events=[{
@@ -87,7 +86,6 @@ def make_db(ticket_status="valid", can_undo=True, assigned=True, extra_tickets=(
 
 
 def use_db(db):
-    """Route every client the mobile and ticket routers create to the same fake."""
     return (
         patch("routers.mobile.db_for_user", return_value=db),
         patch("routers.mobile.supabase", db),
@@ -123,9 +121,7 @@ def as_staff(role=ROLE_EVENT_ADMIN, user_id=STAFF_ID):
     app.dependency_overrides[get_current_user] = lambda: make_user(role, user_id)
 
 
-# ---------------------------------------------------------------------------
 # Event list and roster
-# ---------------------------------------------------------------------------
 def test_mobile_events_success_for_staff():
     """An event admin sees the events they are assigned to."""
     as_staff()
@@ -199,9 +195,7 @@ def test_mobile_attendees_search():
     assert data["attendees"][0]["checkedIn"] is False
 
 
-# ---------------------------------------------------------------------------
 # QR validation (atomic admission)
-# ---------------------------------------------------------------------------
 def test_mobile_validate_ticket_success():
     """A valid signed QR admits the ticket once and records the audit entry."""
     as_staff()
@@ -266,9 +260,7 @@ def test_mobile_validate_database_error_is_not_admission():
     assert db.tables["tickets"][0]["status"] == "valid"
 
 
-# ---------------------------------------------------------------------------
 # Manual check-in
-# ---------------------------------------------------------------------------
 def manual(ticket_id=TICKET_ID, event_id=EVENT_ID):
     return client.post(f"/api/mobile/events/{event_id}/tickets/check-in", json={"ticketId": ticket_id})
 
@@ -303,9 +295,7 @@ def test_manual_check_in_unknown_or_foreign_ticket_is_404():
     assert other_ticket["status"] == "valid"
 
 
-# ---------------------------------------------------------------------------
 # Undo
-# ---------------------------------------------------------------------------
 def undo(ticket_id=TICKET_ID, event_id=EVENT_ID):
     return client.post("/api/tickets/undo-checkin", json={"eventId": event_id, "ticketId": ticket_id})
 
@@ -357,9 +347,7 @@ def test_undo_ticket_not_checked_in():
     assert "not checked in" in res.json()["detail"]
 
 
-# ---------------------------------------------------------------------------
 # Staff assignment records the undo permission
-# ---------------------------------------------------------------------------
 def test_assigning_staff_records_undo_permission():
     from routers import organizer
 

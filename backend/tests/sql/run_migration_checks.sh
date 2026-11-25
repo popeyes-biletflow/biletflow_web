@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Applies migrations 008 (functions), 019 and 020 to a throw-away local PostgreSQL with Supabase
-# stand-ins, runs the behaviour checks, then fires 20 simultaneous scans at one ticket.
-# Needs PostgreSQL server binaries (initdb, pg_ctl, psql). Usage: backend/tests/sql/run_migration_checks.sh
+# Applies migrations 019 and 020 to a local PostgreSQL, runs migration_checks.sql, then 20 simultaneous scans.
+# Needs PostgreSQL server binaries.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

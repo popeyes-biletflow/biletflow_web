@@ -225,8 +225,7 @@ async def activate_paid_sales(
         else:
             use_fallback = True
     except Exception as exc:
-        # Only fall back when the database function is not installed. Any other failure
-        # (not the organizer, event suspended, database error) must stop the activation.
+        # fall back to direct writes only if the function is not installed
         if not _is_missing_function(exc):
             message = sanitize_error(exc)
             denied = "organizer can activate" in message or "42501" in message

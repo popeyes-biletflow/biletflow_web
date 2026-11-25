@@ -1,17 +1,9 @@
--- Migration 019: atomic check-in/undo that assigned staff can actually run,
--- a per-assignment undo permission, and read access to tickets for assigned staff.
---
--- Background: 008 created checkin_ticket_atomic / undo_checkin_atomic as SECURITY INVOKER
--- functions, so row-level security on `tickets` hid the rows from assigned event admins and
--- the API kept doing a read-then-update instead. These versions run as the function owner and
--- authorize the caller themselves, so the API can call them with the user's own token.
+-- Migration 019: check-in/undo functions that assigned staff can run, per-assignment undo, staff read access.
 -- Safe to re-run.
 
 ALTER TABLE event_staff ADD COLUMN IF NOT EXISTS can_undo BOOLEAN NOT NULL DEFAULT TRUE;
 
--- ---------------------------------------------------------------------------
 -- Authorization helpers (SECURITY DEFINER so they are not filtered by RLS)
--- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION is_platform_admin_user(p_uid UUID)
 RETURNS BOOLEAN
 LANGUAGE sql
@@ -54,9 +46,7 @@ AS $$
     );
 $$;
 
--- ---------------------------------------------------------------------------
 -- Atomic admission
--- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION checkin_ticket_atomic(
     p_ticket_id UUID,
     p_event_id UUID,
@@ -73,8 +63,7 @@ DECLARE
     v_ticket RECORD;
     v_updated RECORD;
 BEGIN
-    -- Callers with a user token must be the staff member recorded and be allowed on the event.
-    -- Callers without one (no user) are accepted only with the service role.
+    -- user token: must be the staff member recorded and allowed on the event; no user: service role only
     IF v_uid IS NULL THEN
         IF v_role <> 'service_role' THEN
             RETURN jsonb_build_object('success', FALSE, 'error_code', 'FORBIDDEN', 'message', 'Authentication is required.');
@@ -83,7 +72,7 @@ BEGIN
         RETURN jsonb_build_object('success', FALSE, 'error_code', 'FORBIDDEN', 'message', 'You are not assigned to manage check-ins for this event.');
     END IF;
 
-    -- Lock the row so two simultaneous scans are decided one after the other.
+    -- lock the row so simultaneous scans are decided one at a time
     SELECT * INTO v_ticket FROM tickets WHERE id = p_ticket_id FOR UPDATE;
     IF NOT FOUND THEN
         RETURN jsonb_build_object('success', FALSE, 'error_code', 'NOT_FOUND', 'message', 'Ticket not found.');
@@ -204,15 +193,14 @@ GRANT EXECUTE ON FUNCTION is_platform_admin_user(UUID) TO authenticated, service
 GRANT EXECUTE ON FUNCTION is_event_staff(UUID) TO authenticated, service_role;
 
 -- ---------------------------------------------------------------------------
--- Assigned staff can read the tickets of the events they are assigned to
--- (attendance counters and the attendee list). Policies are additive.
+-- assigned staff can read the tickets of their events (counters, attendee list)
 -- ---------------------------------------------------------------------------
 DROP POLICY IF EXISTS "assigned staff read event tickets" ON tickets;
 CREATE POLICY "assigned staff read event tickets" ON tickets
     FOR SELECT TO authenticated
     USING (is_event_staff(event_id));
 
--- Staff can see their own assignments (the API checks them with the staff member's token).
+-- staff can read their own assignments
 DROP POLICY IF EXISTS "staff read own assignments" ON event_staff;
 CREATE POLICY "staff read own assignments" ON event_staff
     FOR SELECT TO authenticated

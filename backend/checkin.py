@@ -1,17 +1,10 @@
-"""Check-in and undo through the atomic database functions (migration 019).
-
-Admission is decided inside the database, so two scans of the same ticket at the same moment
-produce one admission and one "already used" result. The functions also authorize the caller
-(assigned staff, event organizer or platform admin; undo needs the assignment's can_undo flag),
-so they must be called with a client that carries the user's token.
-"""
+"""Check-in and undo through the atomic database functions (migration 019)."""
 from typing import Any, Optional
 
 from fastapi import HTTPException, status
 
 from deps import sanitize_error
 
-# error_code returned by the SQL functions -> HTTP status
 ERROR_STATUS = {
     "NOT_FOUND": status.HTTP_404_NOT_FOUND,
     "WRONG_EVENT": status.HTTP_400_BAD_REQUEST,
@@ -59,10 +52,8 @@ def _call(client: Any, function: str, ticket_id: str, event_id: str, staff_id: s
 
 def checkin_ticket(client: Any, ticket_id: str, event_id: str, staff_id: str,
                    overrides: Optional[dict[str, tuple[int, str]]] = None) -> dict:
-    """Admit a ticket once. Raises HTTPException with the rejection reason otherwise."""
     return _call(client, "checkin_ticket_atomic", ticket_id, event_id, staff_id, overrides)
 
 
 def undo_checkin(client: Any, ticket_id: str, event_id: str, staff_id: str) -> dict:
-    """Reverse an admission. Raises HTTPException with the rejection reason otherwise."""
     return _call(client, "undo_checkin_atomic", ticket_id, event_id, staff_id)

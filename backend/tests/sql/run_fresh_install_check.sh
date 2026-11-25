@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
-# Builds an empty local PostgreSQL from backend/migrations (000 base tables, then every migration in
-# the order of docs/data-model.md), twice, and fails on any SQL error. Then runs
-# docs/pre-demo-db-check.sql against it and requires every row to be ok.
-# Needs PostgreSQL server binaries. Usage: backend/tests/sql/run_fresh_install_check.sh
+# Applies every migration to an empty local PostgreSQL twice, then runs docs/pre-demo-db-check.sql.
+# Needs PostgreSQL server binaries.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

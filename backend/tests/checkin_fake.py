@@ -1,9 +1,4 @@
-"""In-memory twins of checkin_ticket_atomic / undo_checkin_atomic (migration 019).
-
-They follow the SQL function rules so API tests can exercise the real routers. The database
-behaviour itself (locking, authorization, grants) is checked against PostgreSQL by
-tests/sql/run_migration_checks.sh.
-"""
+"""In-memory versions of checkin_ticket_atomic / undo_checkin_atomic (migration 019)."""
 from types import SimpleNamespace
 
 

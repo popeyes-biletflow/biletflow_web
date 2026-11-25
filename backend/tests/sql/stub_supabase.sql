@@ -1,5 +1,4 @@
--- Minimal stand-ins for the Supabase pieces the migrations rely on, plus the tables they touch.
--- Used only by run_migration_checks.sh on a throw-away local PostgreSQL. Not a copy of the real schema.
+-- Supabase stand-ins and minimal tables for run_migration_checks.sh. Not the real schema.
 create role anon nologin;
 create role authenticated nologin;
 create role service_role nologin;
@@ -33,7 +32,6 @@ grant execute on function auth.uid() to authenticated, anon, service_role;
 alter table tickets enable row level security;
 create policy attendee_reads_own on tickets for select to authenticated using (user_id = auth.uid());
 
--- test helper: fail loudly, print PASS otherwise
 create function expect(label text, ok boolean) returns void language plpgsql as $$
 begin
   if ok is not true then raise exception 'FAIL: %', label; end if;
